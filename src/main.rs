@@ -1,43 +1,37 @@
-use std::sync::{Arc, Mutex};
-
-use cpal::{StreamConfig, SupportedOutputConfigs};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use psimple::Simple;
+use pulse::sample::{Format, Spec};
+use pulse::stream::Direction;
 
 fn main() {
-    let host = cpal::default_host();
-
-    let device_name = "pulse";
-    let device = host
-        .output_devices()
-        .unwrap()
-        .find(|d| d.name().unwrap() == device_name)
-        .expect("Failed to find specified output device");
-
-    let mut supported_configs = device.supported_output_configs().unwrap();
-
-    let config: StreamConfig = supported_configs.next().into();
-
-    let err_fn = |err| eprintln!("an error occurred on the output audio stream: {}", err);
-
-    let sample = Arc::new(Mutex::new(0.0f32));
-
-    let write_tone = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-        let mut sample = sample.lock().unwrap();
-        let frequency = 80.0;
-        let sample_rate = 44100.0;
-        let amplitude = 0.2;
-        for i in 0..data.len() {
-            let phase = (i as f32 / sample_rate) * frequency * 2.0 * std::f32::consts::PI;
-            *sample = amplitude * phase.sin();
-            data[i] = *sample;
-        }
+    let spec = Spec {
+        format: Format::S16NE,
+        channels: 2,
+        rate: 44100,
     };
+    assert!(spec.is_valid());
 
-    let stream = device
-        .build_output_stream(&config, write_tone, err_fn, None)
-        .unwrap();
+    let source_name = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor";
 
-    stream.play().unwrap();
+    let s = Simple::new(
+        None,                // Use the default server
+        "FooApp",            // Our application's name
+        Direction::Record,   // We want a recording stream - CHANGED FROM Playback
+        Some(source_name),   // Use a monitor source - CHANGED FROM None
+        "Audio Monitor",     // Description of our stream
+        &spec,               // Our sample format
+        None,                // Use default channel map
+        None,                // Use default buffering attributes
+    )
+    .unwrap();
 
-    std::thread::park();
+
+    let mut samples: [u8;1024] = [0; 1024];
+
+    loop {
+        s.read(&mut samples).unwrap();
+        for val in samples {
+            println!("{}", val);
+        }
+    }
+
 }
