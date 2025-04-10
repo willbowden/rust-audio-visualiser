@@ -1,43 +1,47 @@
+use macroquad::miniquad::ElapsedQuery;
+use macroquad::miniquad::native::egl::EGL_SAMPLES;
 use macroquad::prelude::*;
 use psimple::Simple;
 use pulse::sample::{Format, Spec};
 use pulse::stream::Direction;
-use std::f64::consts::PI;
+use std::f32::consts::PI;
+use std::os::linux::raw;
+use std::thread;
 
 struct ComplexNum {
-    real: f64,
-    imaginary: f64,
+    real: f32,
+    imaginary: f32,
 }
 
 #[allow(dead_code)]
 fn generate_sinusoid(
-    buffer: &mut Vec<f64>,
-    frequency: f64,
-    sampling_rate: f64,
-    amplitude: f64,
-    duration: f64,
+    buffer: &mut Vec<f32>,
+    frequency: f32,
+    sampling_rate: f32,
+    amplitude: f32,
+    duration: f32,
 ) {
     let num_samples = (sampling_rate * duration) as usize;
     let dt = 1.0 / sampling_rate;
 
     for i in 0..num_samples {
-        let t = i as f64 * dt;
-        buffer.push(amplitude * f64::sin(2.0 * PI * frequency * t));
+        let t = i as f32 * dt;
+        buffer.push(amplitude * f32::sin(2.0 * PI * frequency * t));
     }
 }
 
 #[allow(dead_code)]
-fn dft(k: &f64, data: &Vec<f64>) -> f64 {
+fn dft(k: &f32, data: &Vec<f32>) -> f32 {
     let mut x_k = ComplexNum {
         real: 0.0,
         imaginary: 0.0,
     };
-    let big_n = data.len() as f64;
+    let big_n = data.len() as f32;
 
     for (n, val) in data.iter().enumerate() {
-        let trig = (2.0 * PI * k * n as f64) / big_n;
+        let trig = (2.0 * PI * k * n as f32) / big_n;
         x_k.real += val * trig.cos();
-        x_k.imaginary += val * trig.sin();
+        x_k.imaginary -= val * trig.sin();
     }
 
     let mag = (x_k.real.powi(2) + x_k.imaginary.powi(2)).sqrt() * 2.0;
@@ -46,43 +50,36 @@ fn dft(k: &f64, data: &Vec<f64>) -> f64 {
 }
 
 #[allow(dead_code)]
-fn spectrum_dft(output: &mut Vec<f64>, data: &Vec<f64>, bins: i32) {
+fn spectrum_dft(output: &mut Vec<f32>, data: &Vec<f32>, bins: i32) -> f32 {
+    output.clear();
+    let mut max = 0.0;
     for i in 0..bins {
-        let k = i as f64;
-        output.push(dft(&k, &data));
+        let k = i as f32;
+        let result = dft(&k, data);
+        if result > max {
+            max = result;
+        }
+        output.push(result);
     }
+    max
 }
 
 #[allow(dead_code)]
 fn monitor_audio() {
-    let spec = Spec {
-        format: Format::S16NE,
-        channels: 2,
-        rate: 44100,
-    };
-    assert!(spec.is_valid());
-
-    let source_name = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor";
-
-    let s = Simple::new(
-        None,              // Use the default server
-        "AudioVisualiser", // Our application's name
-        Direction::Record, // We want a recording stream
-        Some(source_name), // Use a monitor source
-        "Audio Monitor",   // Description of our stream
-        &spec,             // Our sample format
-        None,              // Use default channel map
-        None,              // Use default buffering attributes
-    )
-    .unwrap();
-
-    let mut samples: [u8; 1024] = [0; 1024];
+    let mut raw_samples: [u8; 1024] = [0; 1024];
+    let s = get_audio_source();
 
     loop {
-        s.read(&mut samples).unwrap();
-        for val in samples {
-            println!("{}", val);
+        s.read(&mut raw_samples).unwrap();
+        let mut mono_samples: Vec<f32> = Vec::with_capacity(raw_samples.len() / 2);
+
+        for chunk in raw_samples.chunks_exact(8) {
+            let left = f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            let right = f32::from_ne_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+            mono_samples.push((left + right) / 2.0);
         }
+
+        println!("First few samples: {:?}", &mono_samples[..8]);
     }
 }
 
@@ -90,10 +87,10 @@ fn monitor_audio() {
 //     monitor_audio();
 // }
 
-#[macroquad::main("Audio Visualiser")]
-async fn main() {
+#[allow(dead_code)]
+fn get_audio_source() -> Simple {
     let spec = Spec {
-        format: Format::S16NE,
+        format: Format::FLOAT32NE,
         channels: 2,
         rate: 44100,
     };
@@ -101,7 +98,7 @@ async fn main() {
 
     let source_name = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor";
 
-    let s = Simple::new(
+    Simple::new(
         None,              // Use the default server
         "AudioVisualiser", // Our application's name
         Direction::Record, // We want a recording stream
@@ -111,43 +108,54 @@ async fn main() {
         None,              // Use default channel map
         None,              // Use default buffering attributes
     )
-    .unwrap();
+    .unwrap()
+}
 
-    let bins = 512;
+async fn run_visualiser() {
+    let bins = 256;
     let bar_width: f32 = (screen_width() - 10.0) / (bins as f32);
-    let max_height: f32 = screen_height() - 20.0;
-    let bar_spacing: f32 = bar_width / 2.0;
+    let max_height: f32 = screen_height() - 50.0;
+    let bar_spacing: f32 = bar_width / 10.0;
 
-    let mut samples: [u8; 1024] = [0; 1024];
+    let mut raw_samples: [u8; 1024] = [0; 1024];
+    let s = get_audio_source();
     let mut spectrum = Vec::new();
 
     loop {
+        spectrum.clear();
+        s.read(&mut raw_samples).unwrap();
+
+        let mut mono_samples: Vec<f32> = Vec::with_capacity(raw_samples.len() / 2);
+
+        
+        for chunk in raw_samples.chunks_exact(8) {
+            let left = f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            let right = f32::from_ne_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+            mono_samples.push((left + right) / 2.0);
+        }
+        
+        println!("Samples read this frame: {}", mono_samples.len());
+        println!("First few samples: {:?}", &mono_samples[..8]);
+
+        let max_amplitude = spectrum_dft(&mut spectrum, &mono_samples, bins);
+
         clear_background(GRAY);
-
-        s.read(&mut samples).unwrap();
-
-        // for val in samples {
-        //     println!("{}", val);
-        // }
-
-        spectrum_dft(
-            &mut spectrum,
-            &samples.iter().map(|&e| e as f64).collect(),
-            bins,
-        );
-
-        // println!("Drawing spectrum:\n{:?}", spectrum);
 
         for (i, ampl) in spectrum.iter().enumerate() {
             let index = i as f32;
             let intensity: f32 = ampl.clone() as f32;
-            let bar_height = max_height * intensity;
+            let bar_height = (intensity / (max_amplitude as f32)) * max_height;
             let x = (index * bar_width) + (index * bar_spacing) + bar_spacing;
-            let y = 10.0;
+            let y = screen_height() - bar_height - 10.0;
 
             draw_rectangle(x, y, bar_width, bar_height, WHITE);
         }
 
         next_frame().await
     }
+}
+
+#[macroquad::main("Audio Visualiser")]
+async fn main() {
+    run_visualiser().await;
 }
