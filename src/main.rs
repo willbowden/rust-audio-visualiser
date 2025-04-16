@@ -2,6 +2,8 @@ use macroquad::prelude::*;
 use psimple::Simple;
 use pulse::sample::{Format, Spec};
 use pulse::stream::Direction;
+use rustfft::FftPlanner;
+use rustfft::num_complex::Complex;
 use std::f32::consts::PI;
 
 use std::collections::VecDeque;
@@ -9,12 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 const BUFFER_SIZE: usize = 4096; // e.g. ~100ms @ 44.1kHz mono
-const CHUNK_SIZE: usize = 128;   // Samples per read
-
-struct ComplexNum {
-    real: f32,
-    imaginary: f32,
-}
+const CHUNK_SIZE: usize = 1024;
 
 #[allow(dead_code)]
 fn generate_sinusoid(
@@ -33,63 +30,28 @@ fn generate_sinusoid(
     }
 }
 
-#[allow(dead_code)]
-fn dft(k: &f32, buffer: &Arc<Mutex<VecDeque<f32>>>) -> f32 {
-    let mut x_k = ComplexNum {
-        real: 0.0,
-        imaginary: 0.0,
-    };
+fn compute_fft(samples: &[f32], fft: &Arc<dyn rustfft::Fft<f32>>) -> Vec<f32> {
+    let fft_size = samples.len(); // e.g., 512
 
-    let data = buffer.lock().unwrap();
+    // Step 1: Convert mono samples to Complex<f32>
+    let mut buffer: Vec<Complex<f32>> = samples
+        .iter()
+        .map(|&s| Complex { re: s, im: 0.0 })
+        .collect();
 
-    let big_n = data.len() as f32;
+    // Step 2: Perform FFT
+    fft.process(&mut buffer);
 
-    for (n, val) in data.iter().enumerate() {
-        let trig = (2.0 * PI * k * n as f32) / big_n;
-        x_k.real += val * trig.cos();
-        x_k.imaginary -= val * trig.sin();
-    }
+    // Step 3: Convert to magnitudes
+    let magnitudes: Vec<f32> = buffer
+        .iter()
+        .take(fft_size / 2) // only keep first half (real frequencies)
+        .map(|c| c.norm())
+        .collect();
 
-    let mag = (x_k.real.powi(2) + x_k.imaginary.powi(2)).sqrt() * 2.0;
-
-    mag / big_n
+    magnitudes
 }
 
-#[allow(dead_code)]
-fn spectrum_dft(output: &mut Vec<f32>, buffer: &Arc<Mutex<VecDeque<f32>>>, bins: i32) -> f32 {
-    output.clear();
-    let mut max = 0.0;
-    for i in 0..bins {
-        let k = i as f32;
-        let result = dft(&k, buffer);
-        if result > max {
-            max = result;
-        }
-        output.push(result);
-    }
-    max
-}
-
-#[allow(dead_code)]
-fn monitor_audio() {
-    let mut raw_samples: [u8; 1024] = [0; 1024];
-    let s = get_audio_source();
-
-    loop {
-        s.read(&mut raw_samples).unwrap();
-        let mut mono_samples: Vec<f32> = Vec::with_capacity(raw_samples.len() / 2);
-
-        for chunk in raw_samples.chunks_exact(8) {
-            let left = f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            let right = f32::from_ne_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
-            mono_samples.push((left + right) / 2.0);
-        }
-
-        println!("First few samples: {:?}", &mono_samples[..8]);
-    }
-}
-
-#[allow(dead_code)]
 fn get_audio_source() -> Simple {
     let spec = Spec {
         format: Format::FLOAT32NE,
@@ -146,32 +108,55 @@ fn spawn_audio_reader(buffer: Arc<Mutex<VecDeque<f32>>>) {
 }
 
 async fn run_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
-    let bins = 256;
+    let bins = CHUNK_SIZE / 2;
     let bar_width: f32 = (screen_width() - 10.0) / (bins as f32);
     let max_height: f32 = screen_height() - 50.0;
     let bar_spacing: f32 = bar_width / 10.0;
 
-    let mut spectrum = Vec::new();
     let mut last_frame_time = 0.0;
     let target_frame_duration = 1.0 / 60.0;
+
+    let mut planner = FftPlanner::<f32>::new();
+    let fft: Arc<dyn rustfft::Fft<f32>> = planner.plan_fft_forward(CHUNK_SIZE);
 
     loop {
         let current_time = macroquad::prelude::get_time();
         let frame_time = current_time - last_frame_time;
 
-        spectrum.clear();
-
-        let max_amplitude = spectrum_dft(&mut spectrum, &samples, bins);
-        
         clear_background(GRAY);
 
-        for (i, ampl) in spectrum.iter().enumerate() {
+        let mut samples_to_use = samples
+            .lock()
+            .unwrap()
+            .iter()
+            .rev() // get most recent first
+            .take(CHUNK_SIZE)
+            .cloned()
+            .collect::<Vec<_>>();
+        samples_to_use.reverse(); // reverse back to time order
+
+        if samples_to_use.len() < CHUNK_SIZE {
+            next_frame().await;
+            continue;
+        }
+
+        let spectrum = compute_fft(&samples_to_use, &fft);
+
+        let spectrum_log: Vec<f32> = spectrum
+            .iter()
+            .map(|m| (1.0 + *m).log10())
+            .collect();
+
+        let max_val = spectrum_log.iter().cloned().fold(0.0, f32::max);
+        let normalised: Vec<f32> = spectrum_log.iter().map(|m| m / max_val).collect();
+
+
+        for (i, ampl) in normalised.iter().enumerate() {
             let index = i as f32;
-            let intensity: f32 = ampl.clone() as f32;
-            let bar_height = (intensity / (max_amplitude as f32)) * max_height;
+            let bar_height = ampl * max_height;
             let x = (index * bar_width) + (index * bar_spacing) + bar_spacing;
             let y = screen_height() - bar_height - 10.0;
-            
+
             draw_rectangle(x, y, bar_width, bar_height, WHITE);
         }
 
@@ -188,7 +173,8 @@ async fn run_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
 
 #[macroquad::main("Audio Visualiser")]
 async fn main() {
-    let shared_buffer: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::with_capacity(BUFFER_SIZE)));
+    let shared_buffer: Arc<Mutex<VecDeque<f32>>> =
+        Arc::new(Mutex::new(VecDeque::with_capacity(BUFFER_SIZE)));
 
     spawn_audio_reader(shared_buffer.clone());
 

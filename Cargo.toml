@@ -7,3 +7,4 @@ edition = "2024"
 pulse = {package = "libpulse-binding", version = "2.29.0" }
 psimple = {package = "libpulse-simple-binding", version = "2.29.0"}
 macroquad = "0.4.14"
+rustfft = "6.2.0"
