@@ -1,158 +1,176 @@
-use core::num;
-use macroquad::miniquad::log;
 use macroquad::prelude::*;
 use psimple::Simple;
 use pulse::sample::{Format, Spec};
 use pulse::stream::Direction;
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
-use std::f32::consts::PI;
 use windowfunctions::{Symmetry, WindowFunction, window};
 
+use core::num;
+use std::cmp::max;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 const SAMPLE_RATE: usize = 44_100;
-const BUFFER_SIZE: usize = 4096; // e.g. ~100ms @ 44.1kHz mono
-const FFT_SIZE: usize = 4096;
-const WINDOW_SIZE: usize = 4096;
-const BAR_COUNT: usize = 10;
-
-#[allow(dead_code)]
-fn generate_sinusoid(
-    buffer: &mut Vec<f32>,
-    frequency: f32,
-    sampling_rate: f32,
-    amplitude: f32,
-    duration: f32,
-) {
-    let num_samples = (sampling_rate * duration) as usize;
-    let dt = 1.0 / sampling_rate;
-
-    for i in 0..num_samples {
-        let t = i as f32 * dt;
-        buffer.push(amplitude * f32::sin(2.0 * PI * frequency * t));
-    }
-}
-
-/// Computes a single FFT on a buffer of complex samples
-/// 
-/// Be sure to remember that only the first half of the values will be real frequencies
-fn compute_fft(signal: &mut Vec<Complex<f32>>, fft: &Arc<dyn rustfft::Fft<f32>>) -> Vec<f32> {
-    fft.process(signal);
-
-    // Convert to magnitudes
-    let magnitudes: Vec<f32> = signal
-        .iter()
-        .map(|c| c.norm())
-        .collect();
-
-    magnitudes
-}
+const FFT_SIZE: usize = 2048;
+const BAR_COUNT: usize = 24;
 
 /// Computes a frequency spectrum using FFT, optionally across multiple windows
-/// 
+///
 /// Requires `window_function`: a precomputed (e.g Hamming) window signal of length `window_size`
-/// 
+///
 /// Returns a vector of length `window_size / 2` thanks to Nyquist's limit
-fn windowed_fft(
-    signal: &[f32],
-    fft: &Arc<dyn rustfft::Fft<f32>>,
-    window_function: &Vec<f32>,
-    window_size: usize,
-    num_windows: usize,
-    overlap: f32,
-) -> Vec<f32> {
-    let samples_required;
-    let buffer_length = signal.len();
+// fn windowed_fft(
+//     signal: &[f32],
+//     fft: &Arc<dyn rustfft::Fft<f32>>,
+//     window_function: &Vec<f32>,
+//     window_size: usize,
+//     num_windows: usize,
+//     overlap: f32,
+// ) -> Vec<f32> {
+//     let samples_required;
+//     let buffer_length = signal.len();
 
-    if overlap == 0.0 {
-        samples_required = window_size * num_windows;
-    } else {
-        samples_required = window_size + (((num_windows - 1) * window_size) as f32 * overlap) as usize;
+//     if overlap == 0.0 {
+//         samples_required = window_size * num_windows;
+//     } else {
+//         samples_required = window_size + (((num_windows - 1) * window_size) as f32 * overlap) as usize;
+//     }
+
+//     if window_function.len() != window_size {
+//         panic!("Cannot apply windowing function of length {} to windows of length {}!", window_function.len(), window_size);
+//     }
+
+//     if buffer_length < samples_required as usize {
+//         panic!(
+//             "Attempting to run {} FFT windows of size {} with {}% overlap on buffer of length {}.\nBuffer must be {} long!",
+//             num_windows,
+//             window_size,
+//             (overlap*100.0) as usize,
+//             buffer_length,
+//             samples_required
+//         );
+//     }
+
+//     // Calculate indices into buffer for windows
+//     let step = (window_size as f32 * overlap) as usize;
+//     let mut first_index = buffer_length - window_size;
+
+//     // Allow for 1 window where `window_size` == `buffer_length`
+//     if first_index > 0 {
+//         first_index -= 1;
+//     }
+
+//     let mut averaged_windows: Vec<f32> = vec![0.0; window_size];
+
+//     // Compute FFT for each of our windows, moving back to front on the buffer
+//     for i in 0..num_windows {
+//         let start = first_index - (step * i);
+//         let end = start + window_size;
+//         let window_slice = &signal[start..end];
+
+//         // Build windowed complex buffer
+//         let mut buffer: Vec<Complex<f32>> = window_slice
+//             .iter()
+//             .zip(window_function.iter())
+//             .map(|(&x, &w)| Complex { re: x * w, im: 0.0 })
+//             .collect();
+
+//         let amplitudes = compute_fft(&mut buffer, fft);
+//         for (i, &val) in amplitudes.iter().enumerate() {
+//             averaged_windows[i] += val as f32;
+//         }
+//     }
+
+//     for val in &mut averaged_windows {
+//         *val /= num_windows as f32;
+//     }
+
+//     averaged_windows
+// }
+
+/// Compute how to split an FFT of length `fft_size` into `num_bins` logarithmically spaced bins
+///
+/// To be computed in advance and reused across FFT processes
+fn compute_log_ranges(num_bins: usize, sample_rate: usize, fft_size: usize) -> Vec<(usize, usize)> {
+    let weights = [
+        ("Sub-bass", 0.08),
+        ("Bass", 0.16),
+        ("Low Mids", 0.16),
+        ("Mids", 0.26),
+        ("Upper Mids", 0.22),
+        ("Highs", 0.12),
+    ];
+
+    let freq_ranges: [(f32, f32); 6] = [
+        (0.0, 60.0),
+        (60.0, 250.0),
+        (250.0, 500.0),
+        (500.0, 2000.0),
+        (2000.0, 6000.0),
+        (6000.0, 20000.0),
+    ];
+
+    let freq_per_bin = sample_rate as f32 / fft_size as f32;
+
+    let mut bins_per_range = weights.map(|(_, v)| (num_bins as f32 * v).floor() as usize);
+
+    let mut bin_sum: usize = bins_per_range.iter().sum();
+    let mut index = 0;
+
+    while bin_sum < num_bins {
+        bins_per_range[index] += 1;
+        bin_sum += 1;
+        index += 1;
     }
 
-    if window_function.len() != window_size {
-        panic!("Cannot apply windowing function of length {} to windows of length {}!", window_function.len(), window_size);
-    }
-
-
-    if buffer_length < samples_required as usize {
-        panic!(
-            "Attempting to run {} FFT windows of size {} with {}% overlap on buffer of length {}.\nBuffer must be {} long!",
-            num_windows,
-            window_size,
-            (overlap*100.0) as usize,
-            buffer_length,
-            samples_required
-        );
-    }
-
-    // Calculate indices into buffer for windows
-    let step = (window_size as f32 * overlap) as usize; 
-    let mut first_index = buffer_length - window_size;
-
-    // Allow for 1 window where `window_size` == `buffer_length`
-    if first_index > 0 {
-        first_index -= 1;
-    }
-
-    let mut averaged_windows: Vec<f32> = vec![0.0; window_size];
-
-    // Compute FFT for each of our windows, moving back to front on the buffer
-    for i in 0..num_windows {
-        let start = first_index - (step * i);
-        let end = start + window_size;
-        let window_slice = &signal[start..end];
-
-        // Build windowed complex buffer
-        let mut buffer: Vec<Complex<f32>> = window_slice
-            .iter()
-            .zip(window_function.iter())
-            .map(|(&x, &w)| Complex { re: x * w, im: 0.0 })
-            .collect();
-
-        let amplitudes = compute_fft(&mut buffer, fft);
-        for (i, &val) in amplitudes.iter().enumerate() {
-            averaged_windows[i] += val as f32;
-        }
-    }
-
-    for val in &mut averaged_windows {
-        *val /= num_windows as f32;
-    }
-
-    averaged_windows
-}
-
-fn make_log_bins(fft_size: usize, num_bins: usize, sample_rate: usize) -> Vec<(usize, usize)> {
-    let nyquist = sample_rate as f32 / 2.0; // Max frequency we can represent
-    let max_bin = fft_size / 2;
-
-    // Logarithmically spaced frequency bands
-    let log_start = (1.0_f32).ln();
-    let log_end = (nyquist).ln();
+    let mut last_bin_end = 0;
 
     let mut ranges = Vec::new();
 
-    for i in 0..num_bins {
-        let fraction = i as f32 / num_bins as f32;
+    for (i, &bin_count) in bins_per_range.iter().enumerate() {
+        let (start, end) = freq_ranges[i];
 
-        let freq_start = (log_start * (1.0 - fraction) + log_end * fraction).exp();
-        let freq_end = (log_start * (1.0 - (fraction + 1.0 / num_bins as f32))
-            + log_end * (fraction + 1.0 / num_bins as f32))
-            .exp();
+        let log_start = start.log10();
+        let log_end = end.log10();
 
-        let bin_start = ((freq_start / nyquist) * max_bin as f32).floor() as usize;
-        let bin_end = ((freq_end / nyquist) * max_bin as f32).ceil() as usize;
+        let step = (log_end - log_start) / bin_count as f32;
 
-        if bin_start < bin_end {
+        for j in 0..bin_count {
+            let f_low = 10.0_f32.powf(log_start + j as f32 * step);
+            let f_high = 10.0_f32.powf(log_start + (j as f32 + 1.0) * step);
+
+            let computed_bin_start = ((f_low / freq_per_bin) - 1.0).round() as usize;
+            let computed_bin_end = ((f_high / freq_per_bin) - 1.0).round() as usize;
+            
+            let bin_start = max(computed_bin_start, last_bin_end);
+            let bin_end = max(bin_start + 1, computed_bin_end); // Ensure at least 1 bin
+
             ranges.push((bin_start, bin_end));
+            last_bin_end = bin_end;
         }
     }
 
+    for (i, &(start, stop)) in ranges.iter().enumerate() {
+        println!("Frequency bin {}: {}Hz-{}Hz", i+1, ((start as f32) * freq_per_bin).round(), ((stop as f32) * freq_per_bin).round());
+    }
+
     ranges
+}
+
+/// Converts an FFT spectrum into `num_bars` bars spaced logarithmically
+/// in the frequency domain
+fn to_logarithmic_bars(spectrum: &Vec<f32>, bar_ranges: &Vec<(usize, usize)>) -> Vec<f32> {
+    let mut log_bars = vec![0.0; bar_ranges.len()];
+
+    for (i, &(start, end)) in bar_ranges.iter().enumerate() {
+        let slice: &[f32] = &spectrum[start..end];
+        let sum: f32 = slice.iter().sum();
+        log_bars[i] = ((sum / slice.len() as f32) + 1.0).log10();
+    }
+
+    log_bars
 }
 
 fn get_audio_source() -> Simple {
@@ -180,13 +198,13 @@ fn get_audio_source() -> Simple {
 
 fn spawn_audio_reader(buffer: Arc<Mutex<VecDeque<f32>>>) {
     thread::spawn(move || {
-        let mut raw_samples = [0u8; BUFFER_SIZE * 8]; // 8 bytes per stereo frame (2x f32)
+        let mut raw_samples = [0u8; FFT_SIZE * 8]; // 8 bytes per stereo frame (2x f32)
 
         let s = get_audio_source();
 
         loop {
             if let Ok(_) = s.read(&mut raw_samples) {
-                let mut new_samples = Vec::with_capacity(BUFFER_SIZE);
+                let mut new_samples = Vec::with_capacity(FFT_SIZE);
 
                 for chunk in raw_samples.chunks_exact(8) {
                     let left = f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
@@ -200,7 +218,7 @@ fn spawn_audio_reader(buffer: Arc<Mutex<VecDeque<f32>>>) {
                 }
 
                 // Trim the buffer to stay within the max size
-                while buf.len() > BUFFER_SIZE {
+                while buf.len() > FFT_SIZE {
                     buf.pop_front();
                 }
             } else {
@@ -208,6 +226,21 @@ fn spawn_audio_reader(buffer: Arc<Mutex<VecDeque<f32>>>) {
             }
         }
     });
+}
+
+/// Computes a single FFT on a buffer of complex samples
+///
+/// Note that only the first half of the values will be real frequencies
+fn compute_fft(signal: &Vec<f32>, fft: &Arc<dyn rustfft::Fft<f32>>) -> Vec<f32> {
+    let mut complex_samples: Vec<Complex<f32>> =
+        signal.iter().map(|&v| Complex { re: v, im: 0.0 }).collect();
+
+    fft.process(&mut complex_samples);
+
+    // Convert to magnitudes
+    let magnitudes: Vec<f32> = complex_samples.iter().map(|c| c.norm()).collect();
+
+    magnitudes
 }
 
 async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
@@ -222,15 +255,15 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
 
     // FFT setup
     let mut planner = FftPlanner::<f32>::new();
-    let fft: Arc<dyn rustfft::Fft<f32>> = planner.plan_fft_forward(WINDOW_SIZE);
+    let fft: Arc<dyn rustfft::Fft<f32>> = planner.plan_fft_forward(FFT_SIZE);
 
     // Hamming window to apply pre-FFT
     let window_type = WindowFunction::Hamming;
     let symmetry = Symmetry::Symmetric;
-    let window_iter = window::<f32>(WINDOW_SIZE, window_type, symmetry);
+    let window_iter = window::<f32>(FFT_SIZE, window_type, symmetry);
     let window_vec: Vec<f32> = window_iter.into_iter().collect();
 
-    let bin_ranges = make_log_bins(WINDOW_SIZE, BAR_COUNT, SAMPLE_RATE);
+    let log_ranges = compute_log_ranges(BAR_COUNT, SAMPLE_RATE, FFT_SIZE);
 
     loop {
         let current_time = macroquad::prelude::get_time();
@@ -238,34 +271,34 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
 
         clear_background(GRAY);
 
-        let samples_to_use = samples
+        let samples_to_use: Vec<f32> = samples
             .lock()
             .unwrap()
-            .clone();
+            .clone()
+            .iter()
+            .zip(&window_vec)
+            .map(|(&x, &w)| x * w)
+            .collect();
 
-        if samples_to_use.len() < BUFFER_SIZE {
+        if samples_to_use.len() < FFT_SIZE {
             next_frame().await;
             continue;
         }
-        
-        let mut complex_samples = samples_to_use.iter().zip(&window_vec).map(|(&x, &w)| Complex { re: x * w, im: 0.0 }).collect();
 
-        // Compute FFT
-        // let spectrum = windowed_fft(&samples_to_use, &fft, &window_vec, WINDOW_SIZE, 2, 0.5);
-        let spectrum = compute_fft(&mut complex_samples, &fft);
+        let spectrum = compute_fft(&samples_to_use, &fft);
 
-        let log_bars: Vec<f32> = bin_ranges
-            .iter()
-            .map(|(start, end)| {
-                if *end > spectrum.len() {
-                    return 0.0;
-                }
-                let slice = &spectrum[*start..*end];
-                slice.iter().copied().fold(0.0, f32::max)
-            })
-            .collect();
+        // let log_bars: Vec<f32> = bin_ranges
+        //     .iter()
+        //     .map(|(start, end)| {
+        //         if *end > spectrum.len() {
+        //             return 0.0;
+        //         }
+        //         let slice = &spectrum[*start..*end];
+        //         slice.iter().copied().fold(0.0, f32::max)
+        //     })
+        //     .collect();
 
-        let spectrum_log: Vec<f32> = log_bars.iter().map(|m| (1.0 + *m).log10()).collect();
+        let spectrum_log = to_logarithmic_bars(&spectrum, &log_ranges);
 
         let max_val = spectrum_log.iter().cloned().fold(0.0, f32::max);
         let normalised: Vec<f32> = spectrum_log.iter().map(|m| m / max_val).collect();
@@ -293,7 +326,7 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
 #[macroquad::main("Audio Visualiser")]
 async fn main() {
     let shared_buffer: Arc<Mutex<VecDeque<f32>>> =
-        Arc::new(Mutex::new(VecDeque::with_capacity(BUFFER_SIZE)));
+        Arc::new(Mutex::new(VecDeque::with_capacity(FFT_SIZE)));
 
     spawn_audio_reader(shared_buffer.clone());
 
