@@ -6,7 +6,6 @@ use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
 use windowfunctions::{Symmetry, WindowFunction, window};
 
-use core::num;
 use std::cmp::max;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -143,7 +142,7 @@ fn compute_log_ranges(num_bins: usize, sample_rate: usize, fft_size: usize) -> V
 
             let computed_bin_start = ((f_low / freq_per_bin) - 1.0).round() as usize;
             let computed_bin_end = ((f_high / freq_per_bin) - 1.0).round() as usize;
-            
+
             let bin_start = max(computed_bin_start, last_bin_end);
             let bin_end = max(bin_start + 1, computed_bin_end); // Ensure at least 1 bin
 
@@ -152,9 +151,9 @@ fn compute_log_ranges(num_bins: usize, sample_rate: usize, fft_size: usize) -> V
         }
     }
 
-    for (i, &(start, stop)) in ranges.iter().enumerate() {
-        println!("Frequency bin {}: {}Hz-{}Hz", i+1, ((start as f32) * freq_per_bin).round(), ((stop as f32) * freq_per_bin).round());
-    }
+    // for (i, &(start, stop)) in ranges.iter().enumerate() {
+    //     println!("Frequency bin {}: {}Hz-{}Hz", i+1, ((start as f32) * freq_per_bin).round(), ((stop as f32) * freq_per_bin).round());
+    // }
 
     ranges
 }
@@ -181,7 +180,7 @@ fn get_audio_source() -> Simple {
     };
     assert!(spec.is_valid());
 
-    let source_name = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor";
+    let source_name = "bluez_sink.90_62_3F_61_71_4B.a2dp_sink.monitor";
 
     Simple::new(
         None,              // Use the default server
@@ -243,9 +242,9 @@ fn compute_fft(signal: &Vec<f32>, fft: &Arc<dyn rustfft::Fft<f32>>) -> Vec<f32> 
     magnitudes
 }
 
-async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
+async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>, num_bars: usize) {
     // Rendering parameters
-    let bar_width: f32 = (screen_width() - 10.0) / (BAR_COUNT as f32);
+    let bar_width: f32 = (screen_width() - 10.0) / (num_bars as f32);
     let max_height: f32 = screen_height() - 50.0;
     let bar_spacing: f32 = bar_width / 10.0;
 
@@ -263,7 +262,19 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
     let window_iter = window::<f32>(FFT_SIZE, window_type, symmetry);
     let window_vec: Vec<f32> = window_iter.into_iter().collect();
 
-    let log_ranges = compute_log_ranges(BAR_COUNT, SAMPLE_RATE, FFT_SIZE);
+    let log_ranges = compute_log_ranges(num_bars, SAMPLE_RATE, FFT_SIZE);
+
+    let mut display_bars = vec![0.0_f32; num_bars];
+
+    let mut kick_energies: VecDeque<f32> = VecDeque::with_capacity(6);
+    let mut last_kick_time = 0.0;
+
+    let mut bar_colour = Color {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+        a: 1.0,
+    };
 
     loop {
         let current_time = macroquad::prelude::get_time();
@@ -303,13 +314,41 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
         let max_val = spectrum_log.iter().cloned().fold(0.0, f32::max);
         let normalised: Vec<f32> = spectrum_log.iter().map(|m| m / max_val).collect();
 
-        for (i, ampl) in normalised.iter().skip(1).enumerate() {
+        let kick_energy: f32 = spectrum[1..8].iter().sum();
+        kick_energies.push_back(kick_energy);
+
+        if kick_energies.len() > 6 {
+            kick_energies.pop_front();
+        }
+
+        let avg_kick_energy: f32 = kick_energies.iter().sum::<f32>() / kick_energies.len() as f32;
+
+        if kick_energy > 1.5 * avg_kick_energy && current_time - last_kick_time > 0.2 {
+            bar_colour.r = 1.0;
+            bar_colour.g = 0.0;
+            bar_colour.b = 0.0;
+            last_kick_time = current_time;
+        } else {
+            let val = (current_time - last_kick_time) as f32 / 0.2;
+            bar_colour.g = val;
+            bar_colour.b = val;
+        }
+
+        for (i, &val) in normalised.iter().enumerate() {
+            if val > display_bars[i] {
+                display_bars[i] = val;
+            } else {
+                display_bars[i] *= 0.95;
+            }
+        }
+
+        for (i, ampl) in display_bars.iter().skip(1).enumerate() {
             let index = i as f32;
             let bar_height = ampl * max_height;
             let x = (index * bar_width) + (index * bar_spacing) + bar_spacing;
             let y = screen_height() - bar_height - 10.0;
 
-            draw_rectangle(x, y, bar_width, bar_height, WHITE);
+            draw_rectangle(x, y, bar_width, bar_height, bar_colour);
         }
 
         last_frame_time = current_time;
@@ -330,5 +369,5 @@ async fn main() {
 
     spawn_audio_reader(shared_buffer.clone());
 
-    run_bar_visualiser(shared_buffer.clone()).await;
+    run_bar_visualiser(shared_buffer.clone(), 24).await;
 }
