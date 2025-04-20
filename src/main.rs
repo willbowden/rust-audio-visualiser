@@ -13,6 +13,7 @@ use std::thread;
 
 const SAMPLE_RATE: usize = 44_100;
 const FFT_SIZE: usize = 2048;
+const FRAME_RATE: usize = 60;
 
 /// Compute how to split an FFT of length `fft_size` into `num_bins` using common music frequency ranges
 ///
@@ -83,6 +84,7 @@ fn log_ranges(num_bins: usize, sample_rate: usize, fft_size: usize) -> Vec<(usiz
     ranges
 }
 
+/// Computes `num_bins` ranges for an FFT of size `fft_size` using gamma correction
 fn gamma_corrected_ranges(
     num_bins: usize,
     sample_rate: usize,
@@ -90,21 +92,53 @@ fn gamma_corrected_ranges(
     gamma: f32,
 ) -> Vec<(usize, usize)> {
     let nyquist = sample_rate as f32 / 2.0;
-    let freq_per_bin = nyquist / (FFT_SIZE as f32 / 2.0);
+    let freq_per_bin = sample_rate as f32 / fft_size as f32;
 
-    /// UNFINISHED
+    let mut ranges = Vec::new();
 
-    // B_i = ((f_i / f_max) * *(1 / gamma)) * B_max
+    let mut start: usize = 0;
+
+    for i in 0..fft_size {
+        let freq = i as f32 * freq_per_bin;
+        let norm_freq = freq / nyquist;
+
+        let b_i = (norm_freq.powf(1.0 / gamma) * ((num_bins) as f32).floor()) as usize;
+
+        if b_i != start {
+            // println!("Frequency {} is going in bar {}", freq, b_i);
+            ranges.push((start, b_i));
+            start = b_i;
+        }
+    }
+
+    ranges
 }
 
 /// Converts an FFT spectrum into `num_bars` bars spaced based on predefined ranges`bar_ranges`
-fn fft_to_bars(spectrum: &Vec<f32>, bar_ranges: &Vec<(usize, usize)>) -> Vec<f32> {
+///
+/// Averages and takes the log_2 of the values in each bar
+fn take_log_mean_ranges(spectrum: &Vec<f32>, bar_ranges: &Vec<(usize, usize)>) -> Vec<f32> {
     let mut log_bars = vec![0.0; bar_ranges.len()];
 
     for (i, &(start, end)) in bar_ranges.iter().enumerate() {
         let slice: &[f32] = &spectrum[start..end];
         let sum: f32 = slice.iter().sum();
         log_bars[i] = ((sum / slice.len() as f32) + 1.0).log2();
+    }
+
+    log_bars
+}
+
+/// Converts an FFT spectrum into `num_bars` bars spaced based on predefined ranges`bar_ranges`
+///
+/// Averages and takes the log_2 of the values in each bar
+fn take_log_max_ranges(spectrum: &Vec<f32>, bar_ranges: &Vec<(usize, usize)>) -> Vec<f32> {
+    let mut log_bars = vec![0.0; bar_ranges.len()];
+
+    for (i, &(start, end)) in bar_ranges.iter().enumerate() {
+        let slice: &[f32] = &spectrum[start..end];
+        let max_value: f32 = slice.iter().copied().fold(0.0, f32::max);
+        log_bars[i] = (max_value + 1.0).log2();
     }
 
     log_bars
@@ -183,9 +217,27 @@ fn compute_fft(signal: &Vec<f32>, fft: &Arc<dyn rustfft::Fft<f32>>) -> Vec<f32> 
     fft.process(&mut complex_samples);
 
     // Convert to magnitudes
-    let magnitudes: Vec<f32> = complex_samples.iter().map(|c| c.norm()).collect();
+    let magnitudes: Vec<f32> = complex_samples.iter().map(|c| c.norm().powf(2.0)).collect();
 
     magnitudes
+}
+
+fn hsv_to_rgb(hue: f32, saturation: f32, value: f32) -> (f32, f32, f32) {
+    let i = (hue * 6.0).floor() as i32;
+    let f = hue * 6.0 - i as f32;
+    let p = value * (1.0 - saturation);
+    let q = value * (1.0 - f * saturation);
+    let t = value * (1.0 - (1.0 - f) * saturation);
+
+    match i % 6 {
+        0 => (value, t, p),
+        1 => (q, value, p),
+        2 => (p, value, t),
+        3 => (p, q, value),
+        4 => (t, p, value),
+        5 => (value, p, q),
+        _ => (0.0, 0.0, 0.0),
+    }
 }
 
 async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>, num_bars: usize) {
@@ -196,7 +248,7 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>, num_bars: usize)
 
     // For fixing visualiser FPS
     let mut last_frame_time = 0.0;
-    let target_frame_duration = 1.0 / 60.0;
+    let target_frame_duration = 1.0 / (FRAME_RATE as f64);
 
     // FFT setup
     let mut planner = FftPlanner::<f32>::new();
@@ -210,12 +262,15 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>, num_bars: usize)
 
     let log_ranges = log_ranges(num_bars, SAMPLE_RATE, FFT_SIZE);
 
-    let mut display_bars = vec![0.0_f32; num_bars];
+    let mut smoothed = vec![0.0_f32; num_bars];
 
-    let mut kick_energies: VecDeque<f32> = VecDeque::with_capacity(6);
-    let mut last_kick_time = 0.0;
+    let rise = 0.5;
+    let fall = 0.9;
 
-    let mut bar_colour = Color {
+    // let mut hue = 1.0;
+    // let hue_smoothing = 0.05;
+
+    let bar_colour = Color {
         r: 1.0,
         g: 1.0,
         b: 1.0,
@@ -249,41 +304,39 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>, num_bars: usize)
 
         let spectrum = compute_fft(&samples_to_use, &fft);
 
-        let spectrum_log = fft_to_bars(&spectrum, &log_ranges);
+        // let mut dominant_freq = 0;
+        // let mut max_amplitude = 0.0;
 
-        let max_val = spectrum_log.iter().cloned().fold(0.0, f32::max);
-        let normalised: Vec<f32> = spectrum_log.iter().map(|m| m / max_val).collect();
+        // for (i, &val) in spectrum.iter().enumerate() {
+        //     if val > max_amplitude {
+        //         max_amplitude = val;
+        //         dominant_freq = i;
+        //     }   
+        // }
 
-        let kick_energy: f32 = normalised[1..8].iter().sum();
-        kick_energies.push_back(kick_energy);
+        // let next_hue = dominant_freq as f32 / num_bars as f32;
+        // hue = (hue * hue_smoothing) + next_hue * (1.0 - hue_smoothing);
+        // let (r, g, b) = hsv_to_rgb(hue, 1.0, 1.0);
 
-        if kick_energies.len() > 6 {
-            kick_energies.pop_front();
-        }
+        // bar_colour.r = r;
+        // bar_colour.g = g;
+        // bar_colour.b = b;
+        
+        let grouped_spectrum = take_log_max_ranges(&spectrum, &log_ranges);
 
-        let avg_kick_energy: f32 = kick_energies.iter().sum::<f32>() / kick_energies.len() as f32;
-
-        if kick_energy > 1.5 * avg_kick_energy && current_time - last_kick_time > 0.2 {
-            println!("Kick Energy: {}", kick_energy);
-            bar_colour.r = 1.0;
-            bar_colour.g = 0.0;
-            bar_colour.b = 0.0;
-            last_kick_time = current_time;
-        } else {
-            let val = (current_time - last_kick_time) as f32 / 0.2;
-            bar_colour.g = val;
-            bar_colour.b = val;
-        }
-
-        for (i, &val) in normalised.iter().enumerate() {
-            if val > display_bars[i] {
-                display_bars[i] = val;
+        for (i, &val) in grouped_spectrum.iter().enumerate() {
+            if val > smoothed[i] {
+                smoothed[i] = smoothed[i] * rise + val * (1.0 - rise);
             } else {
-                display_bars[i] *= 0.95;
+                smoothed[i] = smoothed[i] * fall + val * (1.0 - fall);
             }
         }
 
-        for (i, ampl) in display_bars.iter().skip(1).enumerate() {
+        // Prevent max_val = 0 as that would lead to NaN in smoothing and no bars
+        let max_val = smoothed.iter().cloned().fold(1e-6, f32::max);
+        let normalised: Vec<f32> = smoothed.iter().map(|m| m / max_val).collect();
+
+        for (i, ampl) in normalised.iter().skip(1).enumerate() {
             let index = i as f32;
             let bar_height = ampl * max_height;
             let x = (index * bar_width) + (index * bar_spacing) + bar_spacing;
@@ -310,5 +363,5 @@ async fn main() {
 
     spawn_audio_reader(shared_buffer.clone());
 
-    run_bar_visualiser(shared_buffer.clone(), 24).await;
+    run_bar_visualiser(shared_buffer.clone(), 32).await;
 }
