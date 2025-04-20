@@ -13,86 +13,11 @@ use std::thread;
 
 const SAMPLE_RATE: usize = 44_100;
 const FFT_SIZE: usize = 2048;
-const BAR_COUNT: usize = 24;
 
-/// Computes a frequency spectrum using FFT, optionally across multiple windows
-///
-/// Requires `window_function`: a precomputed (e.g Hamming) window signal of length `window_size`
-///
-/// Returns a vector of length `window_size / 2` thanks to Nyquist's limit
-// fn windowed_fft(
-//     signal: &[f32],
-//     fft: &Arc<dyn rustfft::Fft<f32>>,
-//     window_function: &Vec<f32>,
-//     window_size: usize,
-//     num_windows: usize,
-//     overlap: f32,
-// ) -> Vec<f32> {
-//     let samples_required;
-//     let buffer_length = signal.len();
-
-//     if overlap == 0.0 {
-//         samples_required = window_size * num_windows;
-//     } else {
-//         samples_required = window_size + (((num_windows - 1) * window_size) as f32 * overlap) as usize;
-//     }
-
-//     if window_function.len() != window_size {
-//         panic!("Cannot apply windowing function of length {} to windows of length {}!", window_function.len(), window_size);
-//     }
-
-//     if buffer_length < samples_required as usize {
-//         panic!(
-//             "Attempting to run {} FFT windows of size {} with {}% overlap on buffer of length {}.\nBuffer must be {} long!",
-//             num_windows,
-//             window_size,
-//             (overlap*100.0) as usize,
-//             buffer_length,
-//             samples_required
-//         );
-//     }
-
-//     // Calculate indices into buffer for windows
-//     let step = (window_size as f32 * overlap) as usize;
-//     let mut first_index = buffer_length - window_size;
-
-//     // Allow for 1 window where `window_size` == `buffer_length`
-//     if first_index > 0 {
-//         first_index -= 1;
-//     }
-
-//     let mut averaged_windows: Vec<f32> = vec![0.0; window_size];
-
-//     // Compute FFT for each of our windows, moving back to front on the buffer
-//     for i in 0..num_windows {
-//         let start = first_index - (step * i);
-//         let end = start + window_size;
-//         let window_slice = &signal[start..end];
-
-//         // Build windowed complex buffer
-//         let mut buffer: Vec<Complex<f32>> = window_slice
-//             .iter()
-//             .zip(window_function.iter())
-//             .map(|(&x, &w)| Complex { re: x * w, im: 0.0 })
-//             .collect();
-
-//         let amplitudes = compute_fft(&mut buffer, fft);
-//         for (i, &val) in amplitudes.iter().enumerate() {
-//             averaged_windows[i] += val as f32;
-//         }
-//     }
-
-//     for val in &mut averaged_windows {
-//         *val /= num_windows as f32;
-//     }
-
-//     averaged_windows
-// }
-
-/// Compute how to split an FFT of length `fft_size` into `num_bins` logarithmically spaced bins
+/// Compute how to split an FFT of length `fft_size` into `num_bins` using common music frequency ranges
 ///
 /// To be computed in advance and reused across FFT processes
-fn compute_log_ranges(num_bins: usize, sample_rate: usize, fft_size: usize) -> Vec<(usize, usize)> {
+fn log_ranges(num_bins: usize, sample_rate: usize, fft_size: usize) -> Vec<(usize, usize)> {
     let weights = [
         ("Sub-bass", 0.08),
         ("Bass", 0.16),
@@ -158,15 +83,28 @@ fn compute_log_ranges(num_bins: usize, sample_rate: usize, fft_size: usize) -> V
     ranges
 }
 
-/// Converts an FFT spectrum into `num_bars` bars spaced logarithmically
-/// in the frequency domain
-fn to_logarithmic_bars(spectrum: &Vec<f32>, bar_ranges: &Vec<(usize, usize)>) -> Vec<f32> {
+fn gamma_corrected_ranges(
+    num_bins: usize,
+    sample_rate: usize,
+    fft_size: usize,
+    gamma: f32,
+) -> Vec<(usize, usize)> {
+    let nyquist = sample_rate as f32 / 2.0;
+    let freq_per_bin = nyquist / (FFT_SIZE as f32 / 2.0);
+
+    /// UNFINISHED
+
+    // B_i = ((f_i / f_max) * *(1 / gamma)) * B_max
+}
+
+/// Converts an FFT spectrum into `num_bars` bars spaced based on predefined ranges`bar_ranges`
+fn fft_to_bars(spectrum: &Vec<f32>, bar_ranges: &Vec<(usize, usize)>) -> Vec<f32> {
     let mut log_bars = vec![0.0; bar_ranges.len()];
 
     for (i, &(start, end)) in bar_ranges.iter().enumerate() {
         let slice: &[f32] = &spectrum[start..end];
         let sum: f32 = slice.iter().sum();
-        log_bars[i] = ((sum / slice.len() as f32) + 1.0).log10();
+        log_bars[i] = ((sum / slice.len() as f32) + 1.0).log2();
     }
 
     log_bars
@@ -179,18 +117,26 @@ fn get_audio_source() -> Simple {
         rate: SAMPLE_RATE as u32,
     };
     assert!(spec.is_valid());
+    // Set lower latency (smaller buffer size)
+    let buffer_attr = pulse::def::BufferAttr {
+        maxlength: u32::MAX, // Let PulseAudio decide max size
+        tlength: u32::MAX,   // Only used for playback
+        prebuf: u32::MAX,    // Only used for playback
+        minreq: u32::MAX,    // Only used for playback
+        fragsize: 1024,      // Lower = lower latency (used for recording)
+    };
 
-    let source_name = "bluez_sink.90_62_3F_61_71_4B.a2dp_sink.monitor";
+    let source_name = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor";
 
     Simple::new(
-        None,              // Use the default server
-        "AudioVisualiser", // Our application's name
-        Direction::Record, // We want a recording stream
-        Some(source_name), // Use a monitor source
-        "Audio Monitor",   // Description of our stream
-        &spec,             // Our sample format
-        None,              // Use default channel map
-        None,              // Use default buffering attributes
+        None,               // Use the default server
+        "AudioVisualiser",  // Our application's name
+        Direction::Record,  // We want a recording stream
+        Some(source_name),  // Use a monitor source
+        "Audio Monitor",    // Description of our stream
+        &spec,              // Our sample format
+        None,               // Use default channel map
+        Some(&buffer_attr), // Use default buffering attributes
     )
     .unwrap()
 }
@@ -227,7 +173,7 @@ fn spawn_audio_reader(buffer: Arc<Mutex<VecDeque<f32>>>) {
     });
 }
 
-/// Computes a single FFT on a buffer of complex samples
+/// Computes a single FFT on a buffer of audio samples
 ///
 /// Note that only the first half of the values will be real frequencies
 fn compute_fft(signal: &Vec<f32>, fft: &Arc<dyn rustfft::Fft<f32>>) -> Vec<f32> {
@@ -262,7 +208,7 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>, num_bars: usize)
     let window_iter = window::<f32>(FFT_SIZE, window_type, symmetry);
     let window_vec: Vec<f32> = window_iter.into_iter().collect();
 
-    let log_ranges = compute_log_ranges(num_bars, SAMPLE_RATE, FFT_SIZE);
+    let log_ranges = log_ranges(num_bars, SAMPLE_RATE, FFT_SIZE);
 
     let mut display_bars = vec![0.0_f32; num_bars];
 
@@ -280,7 +226,12 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>, num_bars: usize)
         let current_time = macroquad::prelude::get_time();
         let frame_time = current_time - last_frame_time;
 
-        clear_background(GRAY);
+        clear_background(Color {
+            r: 0.1,
+            g: 0.1,
+            b: 0.1,
+            a: 1.0,
+        });
 
         let samples_to_use: Vec<f32> = samples
             .lock()
@@ -298,23 +249,12 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>, num_bars: usize)
 
         let spectrum = compute_fft(&samples_to_use, &fft);
 
-        // let log_bars: Vec<f32> = bin_ranges
-        //     .iter()
-        //     .map(|(start, end)| {
-        //         if *end > spectrum.len() {
-        //             return 0.0;
-        //         }
-        //         let slice = &spectrum[*start..*end];
-        //         slice.iter().copied().fold(0.0, f32::max)
-        //     })
-        //     .collect();
-
-        let spectrum_log = to_logarithmic_bars(&spectrum, &log_ranges);
+        let spectrum_log = fft_to_bars(&spectrum, &log_ranges);
 
         let max_val = spectrum_log.iter().cloned().fold(0.0, f32::max);
         let normalised: Vec<f32> = spectrum_log.iter().map(|m| m / max_val).collect();
 
-        let kick_energy: f32 = spectrum[1..8].iter().sum();
+        let kick_energy: f32 = normalised[1..8].iter().sum();
         kick_energies.push_back(kick_energy);
 
         if kick_energies.len() > 6 {
@@ -324,6 +264,7 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>, num_bars: usize)
         let avg_kick_energy: f32 = kick_energies.iter().sum::<f32>() / kick_energies.len() as f32;
 
         if kick_energy > 1.5 * avg_kick_energy && current_time - last_kick_time > 0.2 {
+            println!("Kick Energy: {}", kick_energy);
             bar_colour.r = 1.0;
             bar_colour.g = 0.0;
             bar_colour.b = 0.0;
