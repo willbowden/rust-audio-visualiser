@@ -181,48 +181,7 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>, num_bars: usize)
         }
 
         let spectrum = compute_fft(&samples_to_use, &fft);
-
-        // let mut dominant_freq = 0;
-        // let mut max_amplitude = 0.0;
-
-        // for (i, &val) in spectrum.iter().enumerate() {
-        //     if val > max_amplitude {
-        //         max_amplitude = val;
-        //         dominant_freq = i;
-        //     }
-        // }
-
-        // let next_hue = dominant_freq as f32 / num_bars as f32;
-        // hue = (hue * hue_smoothing) + next_hue * (1.0 - hue_smoothing);
-        // let (r, g, b) = hsv_to_rgb(hue, 1.0, 1.0);
-
-        // bar_colour.r = r;
-        // bar_colour.g = g;
-        // bar_colour.b = b;
-
-        let grouped_spectrum = take_log_max_ranges(&spectrum, &log_ranges);
-
-        for (i, &val) in grouped_spectrum.iter().enumerate() {
-            if val > smoothed[i] {
-                smoothed[i] = smoothed[i] * rise + val * (1.0 - rise);
-            } else {
-                smoothed[i] = smoothed[i] * fall + val * (1.0 - fall);
-            }
-        }
-
-        // Prevent max_val = 0 as that would lead to NaN in smoothing and no bars
-        let max_val = smoothed.iter().cloned().fold(1e-6, f32::max);
-        let normalised: Vec<f32> = smoothed.iter().map(|m| m / max_val).collect();
-
-        for (i, ampl) in normalised.iter().skip(1).enumerate() {
-            let index = i as f32;
-            let bar_height = ampl * max_height;
-            let x = (index * bar_width) + (index * bar_spacing) + bar_spacing;
-            let y = screen_height() - bar_height - 10.0;
-
-            draw_rectangle(x, y, bar_width, bar_height, bar_colour);
-        }
-
+        // TODO: Use Visualiser here
         last_frame_time = current_time;
 
         if frame_time < target_frame_duration {

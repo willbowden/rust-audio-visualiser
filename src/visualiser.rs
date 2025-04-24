@@ -1,3 +1,11 @@
+use std::f32;
+
+use macroquad::{
+    color::Color,
+    shapes::draw_rectangle,
+    window::{screen_height, screen_width},
+};
+
 use crate::{
     bars::{Bars, GroupingStrategy},
     colour::ColourMapper,
@@ -82,6 +90,31 @@ impl Visualiser {
             .colour
             .calculate_bar_colours(self.bars.num_bars(), &smoothed);
 
-        // TODO: Render bars here
+        let max_val = smoothed.iter().cloned().fold(1e-6, f32::max);
+        let normalised: Vec<f32> = smoothed.iter().map(|m| m / max_val).collect();
+
+        let bar_width: f32 = (screen_width() - 10.0) / (self.bars.num_bars() as f32);
+        let max_height: f32 = screen_height() - 50.0;
+        let bar_spacing: f32 = bar_width / 10.0;
+
+        for (i, ampl) in normalised.iter().enumerate() {
+            let index = i as f32;
+            let bar_height = ampl * max_height;
+            let x = (index * bar_width) + (index * bar_spacing) + bar_spacing;
+            let y = screen_height() - bar_height - 10.0;
+
+            draw_rectangle(
+                x,
+                y,
+                bar_width,
+                bar_height,
+                Color {
+                    r: colours[i].0,
+                    g: colours[i].1,
+                    b: colours[i].2,
+                    a: colours[i].3,
+                },
+            );
+        }
     }
 }
