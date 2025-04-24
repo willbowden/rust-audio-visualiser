@@ -95,15 +95,15 @@ impl Visualiser {
         let max_val = self.bars_to_display.iter().cloned().fold(1e-6, f32::max);
         let normalised: Vec<f32> = self.bars_to_display.iter().map(|m| m / max_val).collect();
 
-        let bar_width: f32 = (screen_width() - 10.0) / (self.bars.num_bars() as f32);
+        let bar_width: f32 = screen_width() / (self.bars.num_bars() as f32 * 1.1);
+        let bar_spacing: f32 = (screen_width() / self.bars.num_bars() as f32) - bar_width;
         let max_height: f32 = screen_height() - 50.0;
-        let bar_spacing: f32 = bar_width / 10.0;
 
         for (i, ampl) in normalised.iter().enumerate() {
             let index = i as f32;
             let bar_height = ampl * max_height;
             let x = (index * bar_width) + (index * bar_spacing) + bar_spacing;
-            let y = screen_height() - bar_height - 10.0;
+            let y = screen_height() - bar_height;
 
             draw_rectangle(
                 x,
