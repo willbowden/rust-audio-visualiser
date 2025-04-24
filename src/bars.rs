@@ -130,6 +130,7 @@ fn take_log_max_ranges(spectrum: &[f32], bar_ranges: &[(usize, usize)]) -> Vec<f
 }
 
 pub enum GroupingStrategy {
+    NoGrouping,
     LogMax,
     LogMean,
     GammaCorrected { gamma: f32 },
@@ -143,6 +144,7 @@ impl GroupingStrategy {
         fft_size: usize,
     ) -> Vec<(usize, usize)> {
         match self {
+            GroupingStrategy::NoGrouping => Vec::new(),
             GroupingStrategy::LogMax => log_ranges(num_bars, sample_rate, fft_size),
             GroupingStrategy::LogMean => log_ranges(num_bars, sample_rate, fft_size),
             GroupingStrategy::GammaCorrected { gamma } => {
@@ -150,10 +152,33 @@ impl GroupingStrategy {
             }
         }
     }
+
+    pub fn spectrum_to_bars(&self, spectrum: &[f32], bar_ranges: &[(usize, usize)]) -> Vec<f32> {
+        match *self {
+            GroupingStrategy::NoGrouping => spectrum.to_vec(),
+            GroupingStrategy::LogMax => take_log_max_ranges(spectrum, bar_ranges),
+            GroupingStrategy::LogMean => take_log_mean_ranges(spectrum, bar_ranges),
+            GroupingStrategy::GammaCorrected { gamma: _ } => {
+                take_log_mean_ranges(spectrum, bar_ranges)
+            }
+        }
+    }
 }
 
+// TODO: How do we handle num_bars when NoGrouping is used? That would mean num_bars = fft_size /
+// 2.0,
 pub enum Bars {
     Normal { num_bars: usize },
     LeftMirrored { num_bars: usize },
     RightMirrored { num_bars: usize },
+}
+
+impl Bars {
+    pub fn num_bars(&self) -> usize {
+        match self {
+            Bars::Normal { num_bars }
+            | Bars::LeftMirrored { num_bars }
+            | Bars::RightMirrored { num_bars } => *num_bars,
+        }
+    }
 }

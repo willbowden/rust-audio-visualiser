@@ -1,4 +1,6 @@
 mod bars;
+mod colour;
+mod smoothing;
 mod visualiser;
 
 use visualiser::Visualiser;
