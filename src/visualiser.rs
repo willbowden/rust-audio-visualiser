@@ -27,7 +27,8 @@ pub struct Visualiser {
     smoothing: SmoothingStrategy,
     colour: ColourMapper,
     grouping_ranges: Vec<(usize, usize)>,
-    previous_groups: Vec<f32>,
+    // Bars need to be tracked over time to work with smoothing
+    bars_to_display: Vec<f32>,
 }
 
 impl VisualiserBuilder {
@@ -68,6 +69,8 @@ impl VisualiserBuilder {
             .grouping
             .create_ranges(self.bars.num_bars(), sampling_rate, fft_size);
 
+        let initial_bars: Vec<f32> = vec![0.0; self.bars.num_bars()];
+
         Visualiser {
             sampling_rate,
             fft_size,
@@ -76,22 +79,21 @@ impl VisualiserBuilder {
             smoothing: self.smoothing,
             colour: self.colour,
             grouping_ranges: ranges,
-            previous_groups: Vec::new(),
+            bars_to_display: initial_bars,
         }
     }
 }
 
-// TODO: Wire up FFT with Visualiser system and remember to half fft_size for correct spectra
 impl Visualiser {
-    pub fn update(&self, input: &[f32]) {
+    pub fn update(&mut self, input: &[f32]) {
         let grouped: Vec<f32> = self.grouping.spectrum_to_bars(input, &self.grouping_ranges);
-        let smoothed: Vec<f32> = self.smoothing.smooth(&self.previous_groups, &grouped);
+        self.smoothing.smooth(&mut self.bars_to_display, &grouped);
         let colours = self
             .colour
-            .calculate_bar_colours(self.bars.num_bars(), &smoothed);
+            .calculate_bar_colours(self.bars.num_bars(), &self.bars_to_display);
 
-        let max_val = smoothed.iter().cloned().fold(1e-6, f32::max);
-        let normalised: Vec<f32> = smoothed.iter().map(|m| m / max_val).collect();
+        let max_val = self.bars_to_display.iter().cloned().fold(1e-6, f32::max);
+        let normalised: Vec<f32> = self.bars_to_display.iter().map(|m| m / max_val).collect();
 
         let bar_width: f32 = (screen_width() - 10.0) / (self.bars.num_bars() as f32);
         let max_height: f32 = screen_height() - 50.0;

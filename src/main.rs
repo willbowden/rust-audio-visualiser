@@ -3,7 +3,7 @@ mod colour;
 mod smoothing;
 mod visualiser;
 
-use visualiser::Visualiser;
+use visualiser::VisualiserBuilder;
 
 use macroquad::prelude::*;
 use psimple::Simple;
@@ -118,11 +118,11 @@ fn hsv_to_rgb(hue: f32, saturation: f32, value: f32) -> (f32, f32, f32) {
     }
 }
 
-async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>, num_bars: usize) {
-    // Rendering parameters
-    let bar_width: f32 = (screen_width() - 10.0) / (num_bars as f32);
-    let max_height: f32 = screen_height() - 50.0;
-    let bar_spacing: f32 = bar_width / 10.0;
+async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
+    // Visualiser setup
+    let mut visualiser = VisualiserBuilder::new()
+        .with_bars(bars::Bars::Normal { num_bars: 32 })
+        .build(SAMPLE_RATE, FFT_SIZE);
 
     // For fixing visualiser FPS
     let mut last_frame_time = 0.0;
@@ -137,23 +137,6 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>, num_bars: usize)
     let symmetry = Symmetry::Symmetric;
     let window_iter = window::<f32>(FFT_SIZE, window_type, symmetry);
     let window_vec: Vec<f32> = window_iter.into_iter().collect();
-
-    let log_ranges = log_ranges(num_bars, SAMPLE_RATE, FFT_SIZE);
-
-    let mut smoothed = vec![0.0_f32; num_bars];
-
-    let rise = 0.5;
-    let fall = 0.9;
-
-    // let mut hue = 1.0;
-    // let hue_smoothing = 0.05;
-
-    let bar_colour = Color {
-        r: 1.0,
-        g: 1.0,
-        b: 1.0,
-        a: 1.0,
-    };
 
     loop {
         let current_time = macroquad::prelude::get_time();
@@ -181,7 +164,7 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>, num_bars: usize)
         }
 
         let spectrum = compute_fft(&samples_to_use, &fft);
-        // TODO: Use Visualiser here
+        visualiser.update(&spectrum);
         last_frame_time = current_time;
 
         if frame_time < target_frame_duration {
@@ -200,5 +183,5 @@ async fn main() {
 
     spawn_audio_reader(shared_buffer.clone());
 
-    run_bar_visualiser(shared_buffer.clone(), 32).await;
+    run_bar_visualiser(shared_buffer.clone()).await;
 }
