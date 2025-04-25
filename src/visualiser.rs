@@ -1,14 +1,15 @@
 use std::f32;
 
 use macroquad::{
-    color::Color,
+    color::{Color, WHITE},
     shapes::draw_rectangle,
     window::{screen_height, screen_width},
 };
 
 use crate::{
+    SAMPLE_RATE,
     bars::{Bars, GroupingStrategy},
-    colour::ColourMapper,
+    colour::{ColourMapper, StaticColour},
     smoothing::SmoothingStrategy,
 };
 
@@ -16,7 +17,7 @@ pub struct VisualiserBuilder {
     grouping: GroupingStrategy,
     bars: Bars,
     smoothing: SmoothingStrategy,
-    colour: ColourMapper,
+    colour: Box<dyn ColourMapper>,
 }
 
 pub struct Visualiser {
@@ -25,7 +26,7 @@ pub struct Visualiser {
     grouping: GroupingStrategy,
     bars: Bars,
     smoothing: SmoothingStrategy,
-    colour: ColourMapper,
+    colour: Box<dyn ColourMapper>,
     grouping_ranges: Vec<(usize, usize)>,
     // Bars need to be tracked over time to work with smoothing
     bars_to_display: Vec<f32>,
@@ -40,7 +41,7 @@ impl VisualiserBuilder {
                 rise: 0.5,
                 fall: 0.9,
             },
-            colour: ColourMapper::White,
+            colour: Box::new(StaticColour::new(WHITE)),
         }
     }
 
@@ -59,7 +60,7 @@ impl VisualiserBuilder {
         self
     }
 
-    pub fn with_colour_mapper(mut self, colour: ColourMapper) -> Self {
+    pub fn with_colour_mapper(mut self, colour: Box<dyn ColourMapper>) -> Self {
         self.colour = colour;
         self
     }
@@ -88,9 +89,7 @@ impl Visualiser {
     pub fn update(&mut self, input: &[f32]) {
         let grouped: Vec<f32> = self.grouping.spectrum_to_bars(input, &self.grouping_ranges);
         self.smoothing.smooth(&mut self.bars_to_display, &grouped);
-        let colours = self
-            .colour
-            .calculate_bar_colours(self.bars.num_bars(), &self.bars_to_display);
+        let colour = self.colour.get_colour(&self.bars_to_display, SAMPLE_RATE);
 
         let max_val = self.bars_to_display.iter().cloned().fold(1e-6, f32::max);
         let normalised: Vec<f32> = self.bars_to_display.iter().map(|m| m / max_val).collect();
@@ -105,18 +104,7 @@ impl Visualiser {
             let x = (index * bar_width) + (index * bar_spacing) + bar_spacing;
             let y = screen_height() - bar_height;
 
-            draw_rectangle(
-                x,
-                y,
-                bar_width,
-                bar_height,
-                Color {
-                    r: colours[i].0,
-                    g: colours[i].1,
-                    b: colours[i].2,
-                    a: colours[i].3,
-                },
-            );
+            draw_rectangle(x, y, bar_width, bar_height, colour);
         }
     }
 }

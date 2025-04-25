@@ -3,6 +3,7 @@ mod colour;
 mod smoothing;
 mod visualiser;
 
+use colour::ChromagramColour;
 use visualiser::VisualiserBuilder;
 
 use macroquad::prelude::*;
@@ -122,6 +123,7 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
     // Visualiser setup
     let mut visualiser = VisualiserBuilder::new()
         .with_bars(bars::Bars::Normal { num_bars: 32 })
+        .with_colour_mapper(Box::new(ChromagramColour::new(0.8f32)))
         .build(SAMPLE_RATE, FFT_SIZE);
 
     // For fixing visualiser FPS
