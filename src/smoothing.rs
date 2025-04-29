@@ -1,5 +1,6 @@
 pub enum SmoothingStrategy {
     RiseFall { rise: f32, fall: f32 },
+    None,
 }
 
 fn rise_fall_smoothing(previous: &mut [f32], current: &[f32], rise: f32, fall: f32) {
@@ -19,6 +20,7 @@ impl SmoothingStrategy {
             SmoothingStrategy::RiseFall { rise, fall } => {
                 rise_fall_smoothing(previous, current, rise, fall)
             }
+            SmoothingStrategy::None => (),
         }
     }
 }

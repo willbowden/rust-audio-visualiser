@@ -1,30 +1,26 @@
 use std::f32;
 
 use macroquad::{
-    color::{Color, WHITE},
+    color::WHITE,
     shapes::draw_rectangle,
     window::{screen_height, screen_width},
 };
 
 use crate::{
-    SAMPLE_RATE,
-    bars::{Bars, GroupingStrategy},
+    bars::GroupingStrategy,
     colour::{ColourMapper, StaticColour},
     smoothing::SmoothingStrategy,
 };
 
 pub struct VisualiserBuilder {
     grouping: GroupingStrategy,
-    bars: Bars,
     smoothing: SmoothingStrategy,
     colour: Box<dyn ColourMapper>,
 }
 
 pub struct Visualiser {
     sampling_rate: usize,
-    fft_size: usize,
     grouping: GroupingStrategy,
-    bars: Bars,
     smoothing: SmoothingStrategy,
     colour: Box<dyn ColourMapper>,
     grouping_ranges: Vec<(usize, usize)>,
@@ -35,8 +31,7 @@ pub struct Visualiser {
 impl VisualiserBuilder {
     pub fn new() -> Self {
         Self {
-            grouping: GroupingStrategy::LogMax,
-            bars: Bars::Normal { num_bars: 24 },
+            grouping: GroupingStrategy::LogMax { num_groups: 24 },
             smoothing: SmoothingStrategy::RiseFall {
                 rise: 0.5,
                 fall: 0.9,
@@ -47,11 +42,6 @@ impl VisualiserBuilder {
 
     pub fn with_grouping(mut self, grouping: GroupingStrategy) -> Self {
         self.grouping = grouping;
-        self
-    }
-
-    pub fn with_bars(mut self, bars: Bars) -> Self {
-        self.bars = bars;
         self
     }
 
@@ -66,17 +56,12 @@ impl VisualiserBuilder {
     }
 
     pub fn build(self, sampling_rate: usize, fft_size: usize) -> Visualiser {
-        let ranges = self
-            .grouping
-            .create_ranges(self.bars.num_bars(), sampling_rate, fft_size);
+        let ranges = self.grouping.create_ranges(sampling_rate, fft_size);
 
-        let initial_bars: Vec<f32> = vec![0.0; self.bars.num_bars()];
-
+        let initial_bars: Vec<f32> = vec![0.0; self.grouping.num_bars()];
         Visualiser {
             sampling_rate,
-            fft_size,
             grouping: self.grouping,
-            bars: self.bars,
             smoothing: self.smoothing,
             colour: self.colour,
             grouping_ranges: ranges,
@@ -87,15 +72,15 @@ impl VisualiserBuilder {
 
 impl Visualiser {
     pub fn update(&mut self, input: &[f32]) {
-        let grouped: Vec<f32> = self.grouping.spectrum_to_bars(input, &self.grouping_ranges);
+        let grouped: Vec<f32> = self.grouping.group_spectrum(input, &self.grouping_ranges);
         self.smoothing.smooth(&mut self.bars_to_display, &grouped);
-        let colour = self.colour.get_colour(&self.bars_to_display, SAMPLE_RATE);
+        let colour = self.colour.get_colour(input, self.sampling_rate);
 
         let max_val = self.bars_to_display.iter().cloned().fold(1e-6, f32::max);
         let normalised: Vec<f32> = self.bars_to_display.iter().map(|m| m / max_val).collect();
 
-        let bar_width: f32 = screen_width() / (self.bars.num_bars() as f32 * 1.1);
-        let bar_spacing: f32 = (screen_width() / self.bars.num_bars() as f32) - bar_width;
+        let bar_width: f32 = screen_width() / (self.grouping.num_bars() as f32 * 1.1);
+        let bar_spacing: f32 = (screen_width() / self.grouping.num_bars() as f32) - bar_width;
         let max_height: f32 = screen_height() - 50.0;
 
         for (i, ampl) in normalised.iter().enumerate() {

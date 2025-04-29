@@ -5,6 +5,8 @@ use std::{
 
 use macroquad::color::{Color, WHITE};
 
+use crate::spectra::{frequency_to_pitch_spectrum, pitch_spectrum_to_chromagram};
+
 pub trait ColourMapper {
     fn get_colour(&mut self, spectrum: &[f32], sampling_rate: usize) -> Color;
 }
@@ -26,7 +28,7 @@ impl StaticColour {
 }
 
 pub struct ChromagramColour {
-    colour: Color,
+    hue_vector: (f32, f32),
     smoothing_factor: f32,
     smoothed_chromagram: [f32; 12],
 }
@@ -34,42 +36,47 @@ pub struct ChromagramColour {
 impl ChromagramColour {
     pub fn new(smoothing_factor: f32) -> Self {
         Self {
-            colour: WHITE,
+            hue_vector: (0.0, 0.0),
             smoothing_factor,
             smoothed_chromagram: [0.0; 12],
         }
     }
 }
 
-// TODO: Switch to hue vector averaging
 impl ColourMapper for ChromagramColour {
     fn get_colour(&mut self, spectrum: &[f32], sampling_rate: usize) -> Color {
         let chromagram =
-            pitch_spectrum_to_chromagram(&fourier_to_pitch_spectrum(spectrum, sampling_rate));
+            pitch_spectrum_to_chromagram(&frequency_to_pitch_spectrum(spectrum, sampling_rate));
 
         for (i, &value) in chromagram.iter().enumerate() {
-            self.smoothed_chromagram[i] = self.smoothing_factor * value
-                + (1.0 - self.smoothing_factor) * self.smoothed_chromagram[i];
+            self.smoothed_chromagram[i] = (1.0 - self.smoothing_factor) * value
+                + self.smoothing_factor * self.smoothed_chromagram[i];
         }
 
-        let mut final_colour: (f32, f32, f32) = (0.0, 0.0, 0.0);
+        let mut hue_vector: (f32, f32) = (0.0_f32.cos(), 0.0_f32.sin());
 
         for (i, &intensity) in self.smoothed_chromagram.iter().enumerate() {
-            let hue: f32 = i as f32 * 30.0;
-            let colour = hsv_to_rgb(hue, 1.0, 1.0);
-            final_colour.0 += colour.0 * intensity;
-            final_colour.1 += colour.1 * intensity;
-            final_colour.2 += colour.2 * intensity;
+            let hue: f32 = (i as f32 * 30.0).to_radians();
+            // Add weighted hue vectors together
+            hue_vector.0 += intensity * hue.cos();
+            hue_vector.1 += intensity * hue.sin();
         }
 
-        self.colour = Color {
+        self.hue_vector.0 = (1.0 - self.smoothing_factor) * hue_vector.0
+            + self.smoothing_factor * self.hue_vector.0;
+        self.hue_vector.1 = (1.0 - self.smoothing_factor) * hue_vector.1
+            + self.smoothing_factor * self.hue_vector.1;
+
+        // theta = atan2(y, x)
+        let final_hue = f32::atan2(self.hue_vector.1, self.hue_vector.0).to_degrees();
+        let final_colour = hsv_to_rgb(final_hue, 1.0, 1.0);
+
+        Color {
             r: final_colour.0,
             g: final_colour.1,
             b: final_colour.2,
             a: 1.0,
-        };
-
-        self.colour
+        }
     }
 }
 
@@ -90,44 +97,4 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
     };
 
     (r1 + m, g1 + m, b1 + m)
-}
-
-/// Takes a frequency-domain spectrum of any length and
-///  groups it into a 128-pitch log frequency spectrogram
-fn fourier_to_pitch_spectrum(frequencies: &[f32], sampling_rate: usize) -> [f32; 128] {
-    let mut spectrogram = [0.0; 128];
-    let freq_per_bin = sampling_rate as f32 / frequencies.len() as f32;
-    let mut prev_index: usize = 0;
-
-    for (p, val) in spectrogram.iter_mut().enumerate() {
-        let f_pitch: f32 = 2.0_f32.powf((p as f32 - 69.0) / 12.0) * 440.0;
-
-        let next_index: usize = (f_pitch / freq_per_bin).floor() as usize;
-
-        *val = frequencies[prev_index..next_index].iter().sum();
-        prev_index = next_index;
-    }
-
-    spectrogram
-}
-
-/// Takes a 128-pitch log frequency spectrogram and collects
-///  melodic frequencies into the twelve Western musical notes:
-///
-/// C, C#, D, D#, E, F, F#, G, G#, A, A#, B
-///
-/// Returns the *normalised* intensities for each note
-fn pitch_spectrum_to_chromagram(pitches: &[f32; 128]) -> [f32; 12] {
-    let mut chromagram = [0.0; 12];
-
-    for (p, &val) in pitches.iter().enumerate() {
-        chromagram[p % 12] += val;
-    }
-
-    let sum: f32 = chromagram.iter().sum();
-    if sum > 0.0 {
-        chromagram.iter_mut().for_each(|val| *val /= sum);
-    }
-
-    chromagram
 }

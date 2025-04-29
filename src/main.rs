@@ -1,6 +1,7 @@
 mod bars;
 mod colour;
 mod smoothing;
+mod spectra;
 mod visualiser;
 
 use colour::ChromagramColour;
@@ -100,30 +101,11 @@ fn compute_fft(signal: &[f32], fft: &Arc<dyn rustfft::Fft<f32>>) -> Vec<f32> {
     magnitudes
 }
 
-#[allow(dead_code)]
-fn hsv_to_rgb(hue: f32, saturation: f32, value: f32) -> (f32, f32, f32) {
-    let i = (hue * 6.0).floor() as i32;
-    let f = hue * 6.0 - i as f32;
-    let p = value * (1.0 - saturation);
-    let q = value * (1.0 - f * saturation);
-    let t = value * (1.0 - (1.0 - f) * saturation);
-
-    match i % 6 {
-        0 => (value, t, p),
-        1 => (q, value, p),
-        2 => (p, value, t),
-        3 => (p, q, value),
-        4 => (t, p, value),
-        5 => (value, p, q),
-        _ => (0.0, 0.0, 0.0),
-    }
-}
-
 async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
     // Visualiser setup
     let mut visualiser = VisualiserBuilder::new()
-        .with_bars(bars::Bars::Normal { num_bars: 32 })
-        .with_colour_mapper(Box::new(ChromagramColour::new(0.8f32)))
+        .with_grouping(bars::GroupingStrategy::LogMax { num_groups: 24 })
+        .with_colour_mapper(Box::new(ChromagramColour::new(0.98f32)))
         .build(SAMPLE_RATE, FFT_SIZE);
 
     // For fixing visualiser FPS
