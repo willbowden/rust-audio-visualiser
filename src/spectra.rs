@@ -1,3 +1,61 @@
+use rustfft::FftPlanner;
+use rustfft::num_complex::Complex;
+use std::sync::Arc;
+use windowfunctions::{Symmetry, WindowFunction, window};
+
+pub struct FourierTransform {
+    fft: Arc<dyn rustfft::Fft<f32>>,
+    fft_size: usize,
+    window_vec: Vec<f32>,
+}
+
+/// Struct that computes Fast Fourier Transforms of size `fft_size`
+///
+/// Applies a Hamming Window to singals before processing.
+impl FourierTransform {
+    pub fn new(fft_size: usize) -> Self {
+        // FFT setup
+        let mut planner = FftPlanner::<f32>::new();
+        let fft: Arc<dyn rustfft::Fft<f32>> = planner.plan_fft_forward(fft_size);
+
+        // Hamming window to apply pre-FFT
+        let window_type = WindowFunction::Hamming;
+        let symmetry = Symmetry::Symmetric;
+        let window_iter = window::<f32>(fft_size, window_type, symmetry);
+        let window_vec: Vec<f32> = window_iter.into_iter().collect();
+        Self {
+            fft,
+            fft_size,
+            window_vec,
+        }
+    }
+
+    /// Computes a single FFT on a buffer of real-valued audio samples
+    ///
+    /// Returns the real half of the FFT spectrum, with length `signal.len() / 2`
+    pub fn compute(&self, signal: &[f32]) -> Vec<f32> {
+        let mut complex_samples: Vec<Complex<f32>> = signal
+            .iter()
+            .zip(&self.window_vec)
+            .map(|(&value, &w)| Complex {
+                re: value * w,
+                im: 0.0,
+            })
+            .collect();
+
+        self.fft.process(&mut complex_samples);
+
+        // Convert to magnitudes
+        let magnitudes: Vec<f32> = complex_samples
+            .iter()
+            .take(complex_samples.len() / 2)
+            .map(|c| c.norm().powf(2.0))
+            .collect();
+
+        magnitudes
+    }
+}
+
 /// Takes a frequency-domain spectrum of any length and
 ///  groups it into a 128-pitch log frequency spectrogram
 ///
@@ -26,7 +84,7 @@ pub fn frequency_to_pitch_spectrum(frequencies: &[f32], sampling_rate: usize) ->
     spectrogram
 }
 
-/// Takes a MIDI standard pitch spectrum and collects
+/// Takes a MIDI standard 128-pitch spectrum and collects
 ///  melodic frequencies into the twelve Western musical notes:
 ///
 /// C, C#, D, D#, E, F, F#, G, G#, A, A#, B
@@ -49,12 +107,12 @@ pub fn frequency_to_harmonic_product_spectrum(frequencies: &[f32], downsamples: 
         return frequencies.to_vec();
     }
 
-    let max_index = frequencies.len() / downsamples;
-    let mut result = frequencies.to_vec();
+    let output_len = frequencies.len() / downsamples;
+    let mut result: Vec<f32> = frequencies[0..output_len].to_vec();
 
-    for i in 0..max_index {
-        for j in 1..=downsamples {
-            result[i] = frequencies[j * i] * frequencies[i];
+    for i in 0..output_len {
+        for j in 2..=downsamples {
+            result[i] *= frequencies[j * i];
         }
     }
 

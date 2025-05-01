@@ -1,19 +1,17 @@
-mod bars;
 mod colour;
+mod grouping;
 mod smoothing;
 mod spectra;
 mod visualiser;
 
 use colour::ChromagramColour;
+use spectra::FourierTransform;
 use visualiser::VisualiserBuilder;
 
 use macroquad::prelude::*;
 use psimple::Simple;
 use pulse::sample::{Format, Spec};
 use pulse::stream::Direction;
-use rustfft::FftPlanner;
-use rustfft::num_complex::Complex;
-use windowfunctions::{Symmetry, WindowFunction, window};
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -86,25 +84,10 @@ fn spawn_audio_reader(buffer: Arc<Mutex<VecDeque<f32>>>) {
     });
 }
 
-/// Computes a single FFT on a buffer of audio samples
-///
-/// Note that only the first half of the values will be real frequencies
-fn compute_fft(signal: &[f32], fft: &Arc<dyn rustfft::Fft<f32>>) -> Vec<f32> {
-    let mut complex_samples: Vec<Complex<f32>> =
-        signal.iter().map(|&v| Complex { re: v, im: 0.0 }).collect();
-
-    fft.process(&mut complex_samples);
-
-    // Convert to magnitudes
-    let magnitudes: Vec<f32> = complex_samples.iter().map(|c| c.norm().powf(2.0)).collect();
-
-    magnitudes
-}
-
 async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
     // Visualiser setup
     let mut visualiser = VisualiserBuilder::new()
-        .with_grouping(bars::GroupingStrategy::LogMax { num_groups: 24 })
+        .with_grouping(grouping::GroupingStrategy::LogMax { num_groups: 24 })
         .with_colour_mapper(Box::new(ChromagramColour::new(0.98f32)))
         .build(SAMPLE_RATE, FFT_SIZE);
 
@@ -112,15 +95,7 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
     let mut last_frame_time = 0.0;
     let target_frame_duration = 1.0 / (FRAME_RATE as f64);
 
-    // FFT setup
-    let mut planner = FftPlanner::<f32>::new();
-    let fft: Arc<dyn rustfft::Fft<f32>> = planner.plan_fft_forward(FFT_SIZE);
-
-    // Hamming window to apply pre-FFT
-    let window_type = WindowFunction::Hamming;
-    let symmetry = Symmetry::Symmetric;
-    let window_iter = window::<f32>(FFT_SIZE, window_type, symmetry);
-    let window_vec: Vec<f32> = window_iter.into_iter().collect();
+    let fft = FourierTransform::new(FFT_SIZE);
 
     loop {
         let current_time = macroquad::prelude::get_time();
@@ -133,22 +108,15 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
             a: 1.0,
         });
 
-        let samples_to_use: Vec<f32> = samples
-            .lock()
-            .unwrap()
-            .clone()
-            .iter()
-            .zip(&window_vec)
-            .map(|(&x, &w)| x * w)
-            .collect();
+        let samples_to_use: Vec<f32> = samples.lock().unwrap().clone().into();
 
         if samples_to_use.len() < FFT_SIZE {
             next_frame().await;
             continue;
         }
 
-        let spectrum = compute_fft(&samples_to_use, &fft);
-        visualiser.update(&spectrum);
+        let spectrum = fft.compute(&samples_to_use);
+        visualiser.draw_fft(&spectrum);
         last_frame_time = current_time;
 
         if frame_time < target_frame_duration {
