@@ -103,14 +103,14 @@ pub fn pitch_spectrum_to_chromagram(pitches: &[f32]) -> [f32; 12] {
 /// `downsamples` dictates the number of products used to compute the final result, which
 /// will be of length `frequencies.len() / downsamples`
 pub fn frequency_to_harmonic_product_spectrum(frequencies: &[f32], downsamples: usize) -> Vec<f32> {
-    if downsamples == 0 {
+    if downsamples <= 1 {
         return frequencies.to_vec();
     }
 
     let output_len = frequencies.len() / downsamples;
     let mut result: Vec<f32> = frequencies[0..output_len].to_vec();
 
-    for i in 0..output_len {
+    for i in 1..output_len {
         for j in 2..=downsamples {
             result[i] *= frequencies[j * i];
         }

@@ -116,7 +116,7 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
         }
 
         let spectrum = fft.compute(&samples_to_use);
-        visualiser.draw_fft(&spectrum);
+        visualiser.draw_hps_dominant_freq(&spectrum);
         last_frame_time = current_time;
 
         if frame_time < target_frame_duration {

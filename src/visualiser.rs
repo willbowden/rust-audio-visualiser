@@ -1,8 +1,9 @@
 use std::f32;
 
 use macroquad::{
-    color::{Color, WHITE},
+    color::{BLUE, Color, WHITE},
     shapes::draw_rectangle,
+    text::{draw_text, measure_text},
     window::{screen_height, screen_width},
 };
 
@@ -98,9 +99,39 @@ impl Visualiser {
         }
     }
 
-    pub fn draw_hps(&mut self, input: &[f32]) {
-        let hps: Vec<f32> = frequency_to_harmonic_product_spectrum(input, 3);
+    pub fn draw_hps(&self, input: &[f32]) {
+        let hps: Vec<f32> = frequency_to_harmonic_product_spectrum(input, 4);
 
         self.draw_bars(hps.as_slice(), WHITE, hps.len());
+    }
+
+    // TODO: Add smoothing to HPS, and don't update value if max_index is one of the ignored bins
+    pub fn draw_hps_dominant_freq(&self, input: &[f32]) {
+        let hps: Vec<f32> = frequency_to_harmonic_product_spectrum(input, 4);
+        let mut max_index: usize = 0;
+        let mut max_val: f32 = 0.0;
+
+        // Skip bins representing 0Hz-80Hz
+        for (i, &val) in hps.iter().skip(5).enumerate() {
+            if val > max_val {
+                max_val = val;
+                max_index = i;
+            }
+        }
+
+        let freq_per_bin = (self.sampling_rate as f32 / 2.0) / input.len() as f32;
+        let dominant_freq = freq_per_bin * max_index as f32;
+
+        let output = format!("Index: {}, Freq: {:.1}Hz", max_index, dominant_freq);
+
+        let text_dimensions = measure_text(&output, None, 30, 1.0);
+
+        draw_text(
+            &output,
+            (screen_width() / 2.0) - text_dimensions.width / 2.0,
+            (screen_height() / 2.0) - text_dimensions.height / 2.0,
+            30.0,
+            BLUE,
+        );
     }
 }
