@@ -28,6 +28,8 @@ pub struct Visualiser {
     grouping_ranges: Vec<(usize, usize)>,
     // Bars need to be tracked over time to work with smoothing
     bars_to_display: Vec<f32>,
+    // Smooth HPS
+    smoothed_hps: Vec<f32>,
 }
 
 impl VisualiserBuilder {
@@ -68,6 +70,7 @@ impl VisualiserBuilder {
             colour: self.colour,
             grouping_ranges: ranges,
             bars_to_display: initial_bars,
+            smoothed_hps: Vec::new(),
         }
     }
 }
@@ -106,13 +109,14 @@ impl Visualiser {
     }
 
     // TODO: Add smoothing to HPS, and don't update value if max_index is one of the ignored bins
-    pub fn draw_hps_dominant_freq(&self, input: &[f32]) {
+    pub fn draw_hps_dominant_freq(&mut self, input: &[f32]) {
         let hps: Vec<f32> = frequency_to_harmonic_product_spectrum(input, 4);
+        self.smoothing.smooth(&mut self.smoothed_hps, &hps);
         let mut max_index: usize = 0;
         let mut max_val: f32 = 0.0;
 
         // Skip bins representing 0Hz-80Hz
-        for (i, &val) in hps.iter().skip(5).enumerate() {
+        for (i, &val) in self.smoothed_hps.iter().skip(5).enumerate() {
             if val > max_val {
                 max_val = val;
                 max_index = i;
