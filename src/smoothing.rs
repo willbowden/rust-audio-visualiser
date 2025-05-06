@@ -4,11 +4,6 @@ pub enum SmoothingStrategy {
 }
 
 fn rise_fall_smoothing(previous: &mut [f32], current: &[f32], rise: f32, fall: f32) {
-    // TODO: Fix this
-    if previous.is_empty() {
-        previous.copy_from_slice(current);
-        return;
-    }
     for (i, &val) in current.iter().enumerate() {
         if val > previous[i] {
             previous[i] = previous[i] * rise + val * (1.0 - rise);

@@ -89,7 +89,7 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
     let mut visualiser = VisualiserBuilder::new()
         .with_grouping(grouping::GroupingStrategy::LogMax { num_groups: 24 })
         .with_colour_mapper(Box::new(ChromagramColour::new(0.98f32)))
-        .build(SAMPLE_RATE, FFT_SIZE);
+        .build(SAMPLE_RATE, FFT_SIZE, 4);
 
     // For fixing visualiser FPS
     let mut last_frame_time = 0.0;

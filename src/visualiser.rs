@@ -30,6 +30,7 @@ pub struct Visualiser {
     bars_to_display: Vec<f32>,
     // Smooth HPS
     smoothed_hps: Vec<f32>,
+    hps_downsamples: usize,
 }
 
 impl VisualiserBuilder {
@@ -59,10 +60,16 @@ impl VisualiserBuilder {
         self
     }
 
-    pub fn build(self, sampling_rate: usize, fft_size: usize) -> Visualiser {
+    pub fn build(
+        self,
+        sampling_rate: usize,
+        fft_size: usize,
+        hps_downsamples: usize,
+    ) -> Visualiser {
         let ranges = self.grouping.create_ranges(sampling_rate, fft_size);
 
         let initial_bars: Vec<f32> = vec![0.0; self.grouping.num_bars()];
+        let initial_hps: Vec<f32> = vec![0.0; (fft_size / 2) / hps_downsamples];
         Visualiser {
             sampling_rate,
             grouping: self.grouping,
@@ -70,7 +77,8 @@ impl VisualiserBuilder {
             colour: self.colour,
             grouping_ranges: ranges,
             bars_to_display: initial_bars,
-            smoothed_hps: Vec::new(),
+            smoothed_hps: initial_hps,
+            hps_downsamples,
         }
     }
 }
@@ -103,14 +111,14 @@ impl Visualiser {
     }
 
     pub fn draw_hps(&self, input: &[f32]) {
-        let hps: Vec<f32> = frequency_to_harmonic_product_spectrum(input, 4);
+        let hps: Vec<f32> = frequency_to_harmonic_product_spectrum(input, self.hps_downsamples);
 
         self.draw_bars(hps.as_slice(), WHITE, hps.len());
     }
 
     // TODO: Add smoothing to HPS, and don't update value if max_index is one of the ignored bins
     pub fn draw_hps_dominant_freq(&mut self, input: &[f32]) {
-        let hps: Vec<f32> = frequency_to_harmonic_product_spectrum(input, 4);
+        let hps: Vec<f32> = frequency_to_harmonic_product_spectrum(input, self.hps_downsamples);
         self.smoothing.smooth(&mut self.smoothed_hps, &hps);
         let mut max_index: usize = 0;
         let mut max_val: f32 = 0.0;
@@ -123,6 +131,8 @@ impl Visualiser {
             }
         }
 
+        // Account for skip
+        max_index += 5;
         let freq_per_bin = (self.sampling_rate as f32 / 2.0) / input.len() as f32;
         let dominant_freq = freq_per_bin * max_index as f32;
 
