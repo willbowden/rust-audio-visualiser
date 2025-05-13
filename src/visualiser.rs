@@ -11,7 +11,10 @@ use crate::{
     colour::{ColourMapper, StaticColour},
     grouping::GroupingStrategy,
     smoothing::SmoothingStrategy,
-    spectra::frequency_to_harmonic_product_spectrum,
+    spectra::{
+        frequency_to_harmonic_product_spectrum, frequency_to_pitch_spectrum,
+        pitch_spectrum_to_chromagram,
+    },
 };
 
 pub struct VisualiserBuilder {
@@ -110,42 +113,22 @@ impl Visualiser {
         }
     }
 
-    pub fn draw_hps(&self, input: &[f32]) {
-        let hps: Vec<f32> = frequency_to_harmonic_product_spectrum(input, self.hps_downsamples);
+    pub fn draw_midi_pitches(&mut self, input: &[f32]) {
+        let max_val = input.iter().cloned().fold(1e-6, f32::max);
+        let normalised: Vec<f32> = input.iter().map(|m| m / max_val).collect();
 
-        self.draw_bars(hps.as_slice(), WHITE, hps.len());
+        let pitches = frequency_to_pitch_spectrum(&normalised, self.sampling_rate);
+
+        self.draw_bars(&pitches, WHITE, 128);
     }
 
-    // TODO: Add smoothing to HPS, and don't update value if max_index is one of the ignored bins
-    pub fn draw_hps_dominant_freq(&mut self, input: &[f32]) {
-        let hps: Vec<f32> = frequency_to_harmonic_product_spectrum(input, self.hps_downsamples);
-        self.smoothing.smooth(&mut self.smoothed_hps, &hps);
-        let mut max_index: usize = 0;
-        let mut max_val: f32 = 0.0;
+    pub fn draw_chromagram(&mut self, input: &[f32]) {
+        let max_val = input.iter().cloned().fold(1e-6, f32::max);
+        let normalised: Vec<f32> = input.iter().map(|m| m / max_val).collect();
 
-        // Skip bins representing 0Hz-80Hz
-        for (i, &val) in self.smoothed_hps.iter().skip(5).enumerate() {
-            if val > max_val {
-                max_val = val;
-                max_index = i;
-            }
-        }
+        let pitches = frequency_to_pitch_spectrum(&normalised, self.sampling_rate);
+        let chromagram = pitch_spectrum_to_chromagram(&pitches);
 
-        // Account for skip
-        max_index += 5;
-        let freq_per_bin = (self.sampling_rate as f32 / 2.0) / input.len() as f32;
-        let dominant_freq = freq_per_bin * max_index as f32;
-
-        let output = format!("Index: {}, Freq: {:.1}Hz", max_index, dominant_freq);
-
-        let text_dimensions = measure_text(&output, None, 30, 1.0);
-
-        draw_text(
-            &output,
-            (screen_width() / 2.0) - text_dimensions.width / 2.0,
-            (screen_height() / 2.0) - text_dimensions.height / 2.0,
-            30.0,
-            BLUE,
-        );
+        self.draw_bars(&chromagram, WHITE, 12);
     }
 }

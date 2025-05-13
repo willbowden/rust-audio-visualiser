@@ -9,3 +9,5 @@ psimple = {package = "libpulse-simple-binding", version = "2.29.0"}
 macroquad = "0.4.14"
 rustfft = "6.2.0"
 windowfunctions = "0.1.1"
+cqt-rs = "0.1.0"
+hann-rs = "0.1.0"

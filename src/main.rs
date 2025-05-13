@@ -4,7 +4,7 @@ mod smoothing;
 mod spectra;
 mod visualiser;
 
-use colour::ChromagramColour;
+use colour::{ChromagramColour, StaticColour};
 use spectra::FourierTransform;
 use visualiser::VisualiserBuilder;
 
@@ -87,8 +87,8 @@ fn spawn_audio_reader(buffer: Arc<Mutex<VecDeque<f32>>>) {
 async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
     // Visualiser setup
     let mut visualiser = VisualiserBuilder::new()
-        .with_grouping(grouping::GroupingStrategy::LogMax { num_groups: 24 })
-        .with_colour_mapper(Box::new(ChromagramColour::new(0.98f32)))
+        .with_grouping(grouping::GroupingStrategy::LogMax { num_groups: 128 })
+        .with_colour_mapper(Box::new(StaticColour::new(WHITE)))
         .build(SAMPLE_RATE, FFT_SIZE, 4);
 
     // For fixing visualiser FPS
@@ -116,7 +116,7 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
         }
 
         let spectrum = fft.compute(&samples_to_use);
-        visualiser.draw_hps_dominant_freq(&spectrum);
+        visualiser.draw_midi_pitches(&spectrum);
         last_frame_time = current_time;
 
         if frame_time < target_frame_duration {

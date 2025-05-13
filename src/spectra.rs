@@ -1,3 +1,4 @@
+use cqt_rs::{CQTParams, Cqt};
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
 use std::sync::Arc;
@@ -11,15 +12,15 @@ pub struct FourierTransform {
 
 /// Struct that computes Fast Fourier Transforms of size `fft_size`
 ///
-/// Applies a Hamming Window to singals before processing.
+/// Applies a window to signals before processing.
 impl FourierTransform {
     pub fn new(fft_size: usize) -> Self {
         // FFT setup
         let mut planner = FftPlanner::<f32>::new();
         let fft: Arc<dyn rustfft::Fft<f32>> = planner.plan_fft_forward(fft_size);
 
-        // Hamming window to apply pre-FFT
-        let window_type = WindowFunction::Hamming;
+        // Hann window to apply pre-FFT
+        let window_type = WindowFunction::Hann;
         let symmetry = Symmetry::Symmetric;
         let window_iter = window::<f32>(fft_size, window_type, symmetry);
         let window_vec: Vec<f32> = window_iter.into_iter().collect();
