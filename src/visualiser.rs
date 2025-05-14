@@ -12,8 +12,8 @@ use crate::{
     grouping::GroupingStrategy,
     smoothing::SmoothingStrategy,
     spectra::{
-        frequency_to_harmonic_product_spectrum, frequency_to_pitch_spectrum,
-        pitch_spectrum_to_chromagram,
+        chroma_index_to_note, frequency_to_harmonic_product_spectrum, frequency_to_pitch_spectrum,
+        get_n_largest_indices, pitch_spectrum_to_chromagram,
     },
 };
 
@@ -31,9 +31,7 @@ pub struct Visualiser {
     grouping_ranges: Vec<(usize, usize)>,
     // Bars need to be tracked over time to work with smoothing
     bars_to_display: Vec<f32>,
-    // Smooth HPS
-    smoothed_hps: Vec<f32>,
-    hps_downsamples: usize,
+    smoothed_chromagram: Vec<f32>,
 }
 
 impl VisualiserBuilder {
@@ -63,16 +61,11 @@ impl VisualiserBuilder {
         self
     }
 
-    pub fn build(
-        self,
-        sampling_rate: usize,
-        fft_size: usize,
-        hps_downsamples: usize,
-    ) -> Visualiser {
+    pub fn build(self, sampling_rate: usize, fft_size: usize) -> Visualiser {
         let ranges = self.grouping.create_ranges(sampling_rate, fft_size);
 
         let initial_bars: Vec<f32> = vec![0.0; self.grouping.num_bars()];
-        let initial_hps: Vec<f32> = vec![0.0; (fft_size / 2) / hps_downsamples];
+        let initial_chromagram: Vec<f32> = vec![0.0; 12];
         Visualiser {
             sampling_rate,
             grouping: self.grouping,
@@ -80,8 +73,7 @@ impl VisualiserBuilder {
             colour: self.colour,
             grouping_ranges: ranges,
             bars_to_display: initial_bars,
-            smoothed_hps: initial_hps,
-            hps_downsamples,
+            smoothed_chromagram: initial_chromagram,
         }
     }
 }
@@ -122,6 +114,18 @@ impl Visualiser {
         self.draw_bars(&pitches, WHITE, 128);
     }
 
+    pub fn draw_centered_text(&self, output: &str) {
+        let text_dimensions = measure_text(output, None, 30, 1.0);
+
+        draw_text(
+            output,
+            (screen_width() / 2.0) - text_dimensions.width / 2.0,
+            (screen_height() / 2.0) - text_dimensions.height / 2.0,
+            30.0,
+            BLUE,
+        );
+    }
+
     pub fn draw_chromagram(&mut self, input: &[f32]) {
         let max_val = input.iter().cloned().fold(1e-6, f32::max);
         let normalised: Vec<f32> = input.iter().map(|m| m / max_val).collect();
@@ -129,6 +133,22 @@ impl Visualiser {
         let pitches = frequency_to_pitch_spectrum(&normalised, self.sampling_rate);
         let chromagram = pitch_spectrum_to_chromagram(&pitches);
 
-        self.draw_bars(&chromagram, WHITE, 12);
+        self.smoothing
+            .smooth(&mut self.smoothed_chromagram, &chromagram);
+
+        let top_three_indices: Vec<usize> =
+            get_n_largest_indices(self.smoothed_chromagram.as_slice(), 3);
+        let top_three_notes: Vec<String> = top_three_indices
+            .iter()
+            .map(|&val| chroma_index_to_note(val))
+            .collect();
+
+        let output = format!(
+            "Top Notes: {}, {}, {}",
+            top_three_notes[0], top_three_notes[1], top_three_notes[2]
+        );
+
+        self.draw_bars(&self.smoothed_chromagram, WHITE, 12);
+        self.draw_centered_text(&output);
     }
 }

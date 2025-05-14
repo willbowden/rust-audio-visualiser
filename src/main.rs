@@ -37,7 +37,7 @@ fn get_audio_source() -> Simple {
         fragsize: 1024,      // Lower = lower latency (used for recording)
     };
 
-    let source_name = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor";
+    let source_name = "bluez_sink.90_62_3F_61_71_4B.a2dp_sink.monitor";
 
     Simple::new(
         None,               // Use the default server
@@ -87,9 +87,9 @@ fn spawn_audio_reader(buffer: Arc<Mutex<VecDeque<f32>>>) {
 async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
     // Visualiser setup
     let mut visualiser = VisualiserBuilder::new()
-        .with_grouping(grouping::GroupingStrategy::LogMax { num_groups: 128 })
+        .with_grouping(grouping::GroupingStrategy::LogMax { num_groups: 12 })
         .with_colour_mapper(Box::new(StaticColour::new(WHITE)))
-        .build(SAMPLE_RATE, FFT_SIZE, 4);
+        .build(SAMPLE_RATE, FFT_SIZE);
 
     // For fixing visualiser FPS
     let mut last_frame_time = 0.0;
@@ -116,7 +116,7 @@ async fn run_bar_visualiser(samples: Arc<Mutex<VecDeque<f32>>>) {
         }
 
         let spectrum = fft.compute(&samples_to_use);
-        visualiser.draw_midi_pitches(&spectrum);
+        visualiser.draw_chromagram(&spectrum);
         last_frame_time = current_time;
 
         if frame_time < target_frame_duration {

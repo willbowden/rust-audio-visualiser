@@ -4,6 +4,47 @@ use rustfft::num_complex::Complex;
 use std::sync::Arc;
 use windowfunctions::{Symmetry, WindowFunction, window};
 
+pub fn get_n_largest_indices(items: &[f32], n: usize) -> Vec<usize> {
+    let mut values = vec![0.0; n];
+    let mut indices: Vec<usize> = vec![items.len(); n];
+
+    for (index, &value) in items.iter().enumerate() {
+        for i in 0..n {
+            if value > values[i] {
+                if i < n - 1 {
+                    for j in (i + 1..n).rev() {
+                        values[j] = values[j - 1];
+                        indices[j] = indices[j - 1];
+                    }
+                }
+                values[i] = value;
+                indices[i] = index;
+                break;
+            }
+        }
+    }
+
+    indices
+}
+
+pub fn chroma_index_to_note(index: usize) -> String {
+    match index {
+        0 => String::from("C"),
+        1 => String::from("C#/Db"),
+        2 => String::from("D"),
+        3 => String::from("D#/Eb"),
+        4 => String::from("E"),
+        5 => String::from("F"),
+        6 => String::from("F#/Gb"),
+        7 => String::from("G"),
+        8 => String::from("G#/Ab"),
+        9 => String::from("A"),
+        10 => String::from("A#/Bb"),
+        11 => String::from("B"),
+        _ => String::from("UNK"),
+    }
+}
+
 pub struct FourierTransform {
     fft: Arc<dyn rustfft::Fft<f32>>,
     fft_size: usize,
@@ -62,24 +103,23 @@ impl FourierTransform {
 ///
 ///  Assumes `frequencies` represents 0Hz to (sampling_rate / 2)Hz in uniform intervals
 pub fn frequency_to_pitch_spectrum(frequencies: &[f32], sampling_rate: usize) -> [f32; 128] {
-    let min_pitch: usize = 32; // E2, roughly 82Hz
-    let max_pitch: usize = 84; // C6 ~1kHz
-
     let mut spectrogram = [0.0; 128];
     let freq_per_bin = (sampling_rate as f32 / 2.0) / frequencies.len() as f32;
-    let mut prev_index: usize = 0;
 
-    for (p, val) in spectrogram.iter_mut().enumerate() {
-        let f_pitch: f32 = 2.0_f32.powf((p as f32 - 69.0) / 12.0) * 440.0;
+    let min_pitch: usize = 40; // E2
+    let max_pitch: usize = 84; // C6
 
-        if p < min_pitch || p > max_pitch {
-            *val = 0.0;
+    for (bin_idx, value) in frequencies.iter().enumerate() {
+        let bin_freq = bin_idx as f32 * freq_per_bin;
+        let pitch = 69.0 + 12.0 * (bin_freq / 440.0).log2(); // MIDI pitch estimate
+        let pitch_idx = pitch.round() as usize;
+        // Ignore pitches outside desired range (e.g ignore signals from percussion instruments)
+        if pitch_idx < min_pitch || pitch_idx > max_pitch {
+            continue;
         }
-
-        let next_index: usize = (f_pitch / freq_per_bin).floor() as usize;
-
-        *val = frequencies[prev_index..next_index].iter().sum();
-        prev_index = next_index;
+        if pitch_idx < 128 {
+            spectrogram[pitch_idx] += value;
+        }
     }
 
     spectrogram
