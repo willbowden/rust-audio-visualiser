@@ -2,6 +2,7 @@ use std::f32;
 
 use macroquad::{
     color::{BLUE, Color, WHITE},
+    miniquad::log,
     shapes::draw_rectangle,
     text::{draw_text, measure_text},
     window::{screen_height, screen_width},
@@ -65,7 +66,7 @@ impl VisualiserBuilder {
         let ranges = self.grouping.create_ranges(sampling_rate, fft_size);
 
         let initial_bars: Vec<f32> = vec![0.0; self.grouping.num_bars()];
-        let initial_chromagram: Vec<f32> = vec![0.0; 12];
+        let initial_chromagram: Vec<f32> = vec![(1e-6_f32).ln(); 12];
         Visualiser {
             sampling_rate,
             grouping: self.grouping,
@@ -127,14 +128,25 @@ impl Visualiser {
     }
 
     pub fn draw_chromagram(&mut self, input: &[f32]) {
+        let alpha = 0.2_f32;
+
         let max_val = input.iter().cloned().fold(1e-6, f32::max);
         let normalised: Vec<f32> = input.iter().map(|m| m / max_val).collect();
 
         let pitches = frequency_to_pitch_spectrum(&normalised, self.sampling_rate);
         let chromagram = pitch_spectrum_to_chromagram(&pitches);
 
-        self.smoothing
-            .smooth(&mut self.smoothed_chromagram, &chromagram);
+        // TODO: Figure out how to do a log chromagram and normalise it properly for display
+        let log_chromagram: Vec<f32> = chromagram
+            .iter()
+            .map(|&val| (1e-6_f32).max(val).ln())
+            .collect();
+
+        // Apply EMA to chromagram
+        for (index, &value) in log_chromagram.iter().enumerate() {
+            self.smoothed_chromagram[index] =
+                alpha * value + (1.0 - alpha) * self.smoothed_chromagram[index];
+        }
 
         let top_three_indices: Vec<usize> =
             get_n_largest_indices(self.smoothed_chromagram.as_slice(), 3);
@@ -148,7 +160,10 @@ impl Visualiser {
             top_three_notes[0], top_three_notes[1], top_three_notes[2]
         );
 
-        self.draw_bars(&self.smoothed_chromagram, WHITE, 12);
+        let max_val = log_chromagram.iter().cloned().fold(1e-6, f32::max);
+        let normalised: Vec<f32> = log_chromagram.iter().map(|&val| val / max_val).collect();
+
+        self.draw_bars(&normalised, WHITE, 12);
         self.draw_centered_text(&output);
     }
 }
